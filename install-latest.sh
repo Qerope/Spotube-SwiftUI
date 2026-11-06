@@ -33,6 +33,15 @@ warn() { printf '\033[33mWarning: %s\033[0m\n' "$1" >&2; }
 
 command -v gh >/dev/null || fail "GitHub CLI (gh) is not installed: brew install gh"
 
+# Full YouTube audio on macOS is decoded by yt-dlp (needs a JS runtime: deno).
+for tool in yt-dlp deno; do
+  if ! command -v "$tool" >/dev/null; then
+    command -v brew >/dev/null || fail "$tool is missing and Homebrew isn't installed"
+    step "Installing $tool"; brew install -q "$tool"
+  fi
+done
+brew upgrade -q yt-dlp >/dev/null 2>&1 || true   # YouTube changes often; keep yt-dlp current
+
 # --- Pull --------------------------------------------------------------------------------
 cd "$(dirname "$0")"
 if git rev-parse --git-dir >/dev/null 2>&1; then

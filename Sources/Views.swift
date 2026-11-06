@@ -36,7 +36,11 @@ struct RootView: View {
                 case .plugins: PluginsView(reloadLibrary: { Task { await loadLib() } })
                 case .collection(let c): CollectionView(c: c).id(c.id)
                 }
-            }.background(.black)
+            }
+            .navigationDestination(for: Collection.self) { c in
+                if c.id.hasPrefix("spotify:artist:"), pm.metadata?.has("artist") == true { ArtistView(c: c) } else { CollectionView(c: c) }
+            }
+            .background(.black)
         }
         .safeAreaInset(edge: .bottom) { if player.current != nil { MiniPlayer().onTapGesture { full = true } } }
         .sheet(isPresented: $full) { FullPlayer() }
@@ -163,7 +167,6 @@ struct SearchView: View {
             }
         }
         .navigationTitle("Search")
-        .navigationDestination(for: Collection.self) { CollectionView(c: $0) }
         .searchable(text: $q, placement: .toolbar).onSubmit(of: .search) {
             Task {
                 guard let m = pm.metadata else { return }
@@ -281,4 +284,51 @@ struct FullPlayer: View {
 extension Double {
     var nanSafe: Double? { isFinite ? self : nil }
     var mmss: String { let s = Int(isFinite ? self : 0); return String(format: "%d:%02d", s / 60, s % 60) }
+}
+
+struct ArtistPage: Codable { var name: String; var art: String?; var tracks: [Track]; var albums: [Collection] }
+
+struct ArtistView: View {
+    let c: Collection
+    @Environment(PluginManager.self) var pm
+    @State var page: ArtistPage?
+    @State var err: String?
+    var body: some View {
+        TrackList(tracks: page?.tracks ?? []) {
+            if let page {
+                HStack(spacing: 20) {
+                    AsyncImage(url: (page.art ?? c.art).flatMap(URL.init)) { $0.resizable().scaledToFill() } placeholder: { Color(white: 0.08) }
+                        .frame(width: 140, height: 140).clipShape(Circle())
+                    VStack(alignment: .leading) {
+                        Text("Artist").font(.caption).foregroundStyle(.secondary)
+                        Text(page.name.isEmpty ? c.title : page.name).font(.largeTitle.bold())
+                    }
+                }.padding(.vertical, 12)
+                if !page.albums.isEmpty {
+                    Text("Discography").font(.headline)
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 140), spacing: 16)], alignment: .leading, spacing: 16) {
+                        ForEach(page.albums) { a in
+                            NavigationLink(value: a) {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    AsyncImage(url: a.art.flatMap(URL.init)) { $0.resizable().scaledToFill() } placeholder: { Color(white: 0.08) }
+                                        .frame(width: 140, height: 140).clipShape(RoundedRectangle(cornerRadius: 8))
+                                    Text(a.title).font(.callout).lineLimit(1)
+                                    Text(a.subtitle ?? "").font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                                }.frame(width: 140)
+                            }.buttonStyle(.plain)
+                        }
+                    }
+                }
+                if !page.tracks.isEmpty { Text("Popular").font(.headline).padding(.top, 12) }
+            }
+        }
+        .navigationTitle(c.title)
+        .overlay {
+            if let err { ContentUnavailableView("Couldn't load artist", systemImage: "exclamationmark.triangle", description: Text(err)) }
+            else if page == nil { ProgressView() }
+        }
+        .task(id: c.id) {
+            do { page = try await pm.metadata?.call("artist", [c.id]); err = nil } catch { err = error.localizedDescription }
+        }
+    }
 }

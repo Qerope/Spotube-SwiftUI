@@ -76,6 +76,11 @@ const plugin = {
   // Returns { url, headers } so the player sends the same User-Agent the stream was issued for.
   async stream(t) {
     const id = await match(t), errs = [];
+    // macOS: yt-dlp decodes YouTube's signature/"n" parameter (like NewPipeExtractor) -> full song, cached file.
+    if (globalThis.ytdlp) {
+      try { return await ytdlp.audio("https://www.youtube.com/watch?v=" + id); }
+      catch (e) { errs.push("yt-dlp: " + e.message); }
+    }
     for (const [c, ua] of CLIENTS) {
       try {
         const p = await post("https://www.youtube.com/youtubei/v1/player?prettyPrint=false",

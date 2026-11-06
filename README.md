@@ -8,16 +8,16 @@ Build: `brew install xcodegen && xcodegen && open SpotubeLite.xcodeproj` (scheme
 | Plugin | Abilities | Notes |
 |---|---|---|
 | `spotify.js` | metadata, authentication | Port of [spotube-plugin-spotify](https://github.com/sonic-liberation/spotube-plugin-spotify) (AGPL-3.0). Plugins → Spotify → **Log in** (web login → `sp_dc` → TOTP token → GraphQL). Search, Liked Songs, your playlists. |
-| `youtube.js` | audio | NewPipe-style InnerTube search + match by duration/"Topic" channel → m4a stream. YouTube may answer "Sign in to confirm you're not a bot" on some networks. |
+| `youtube.js` | audio | InnerTube search, match by duration/"Topic" channel. On macOS the audio is fetched by **yt-dlp** (decodes YouTube's signature/`n` param like NewPipeExtractor; needs `brew install yt-dlp deno`, done by `install-latest.sh`), cached in `~/Library/Caches/audio`, next track pre-fetched. Direct InnerTube streams are only a fallback (YouTube caps them at ~1 MB without a poToken). |
 | `itunes.js` | metadata, audio | 30 s previews; automatic audio fallback when YouTube fails. |
 
 ## Plugin API
 A plugin is one `.js` file defining `const plugin = { name, version, author, abilities, ... }`. Install via URL or file in the Plugins page.
-- **metadata**: `search(q)`, `home()`, `library()` → `[{id,title,subtitle?,art?}]`, `collection(id)` → tracks
-- **audio**: `stream(track)` → playable URL (m4a/mp3/HLS)
+- **metadata**: `search(q)`, `searchAll(q)` → `{artists, tracks}`, `home()`, `library()` → `[{id,title,subtitle?,art?}]`, `collection(id)` → tracks, `artist(id)` → `{name, art, tracks, albums}`
+- **audio**: `stream(track)` → playable URL, or `{url, headers}` (downloaded in bounded chunks)
 - **authentication**: `login()`, `logout()`
 - Track: `{id,title,artist,album?,art?,duration?(s),extra?:{string:string}}`
-- Host globals: `fetch(url,{method,headers,body})`, `localStorage`, `crypto.hmac(algo,keyHex,dataHex)`, `webview.cookie(url,name)`
+- Host globals: `fetch(url,{method,headers,body})`, `localStorage`, `crypto.hmac(algo,keyHex,dataHex)`, `webview.cookie(url,name)`, `ytdlp.audio(youtubeUrl)` → cached file URL (macOS)
 
 Spotube 6's own `.smplug` plugins are Kotlin/Zipline (QuickJS bytecode) and can't be loaded directly; the bundled JS ports cover the same features.
 

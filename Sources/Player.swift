@@ -47,15 +47,22 @@ import Observation
                     guard let u = URL(string: s.url) else { continue }
                     guard t == current else { return }
                     // Hosts that reject open-ended ranges (googlevideo): fetch in bounded chunks to a cache file.
-                    let playURL = (s.headers != nil || u.host?.contains("googlevideo") == true)
+                    let playURL = (s.headers != nil && !u.isFileURL)
                         ? try await ChunkedDownload.file(u, headers: s.headers ?? [:], key: "\(src.id)-\(t.id)") : u
                     guard t == current else { return }
                     av.replaceCurrentItem(with: AVPlayerItem(url: playURL)); av.play(); playing = true
-                    error = errs.isEmpty ? nil : "via \(src.name)"; nowPlaying(); return
+                    error = errs.isEmpty ? nil : "via \(src.name)"; nowPlaying()
+                    prefetch(after: t, using: src); return
                 } catch { errs.append("\(src.name): \(error.localizedDescription)") }
             }
             if t == current { self.error = errs.joined(separator: " · ") }
         }
+    }
+
+    /// Warm the cache for the next track so it starts instantly.
+    private func prefetch(after t: Track, using src: JSPlugin) {
+        guard let i = queue.firstIndex(of: t), i + 1 < queue.count, let next = try? JSONSerialization.jsonObject(with: JSONEncoder().encode(queue[i + 1])) else { return }
+        Task { let _: StreamResult? = try? await src.call("stream", [next]) }
     }
 
     private func nowPlaying() {

@@ -5,6 +5,7 @@ const GQL = "https://api-partner.spotify.com/pathfinder/v2/query";
 const NUANCES = "https://gist.githubusercontent.com/raw/22ed9c6ba463899e933427f7de1f0eef/nuances.json";
 const Q = {
   searchDesktop: "d9f785900f0710b31c07818d617f4f7600c1e21217e80f5b043d1e78d74e6026",
+  queryArtistDiscographyAll: "5e07d323febb57b4a56a42abbf781490e58764aa45feb6e3dc0591564fc56599",
   queryArtistOverview: "7f86ff63e38c24973a2842b672abe44c910c1973978dc8a4a0cb648edef34527",
   searchTracks: "bc1ca2fcd0ba1013a0fc88e6cc4f190af501851e3dafd3e1ef85840297694428",
   libraryV3: "390c78e5b951029bad359785e69b07b536a509c581cbcd0aded5e5067f187455",
@@ -112,6 +113,30 @@ const plugin = {
       return { artists: [], tracks: await this.search(q) };
     }
   },
+  // Artist page: top tracks + full discography (albums, singles, compilations), newest first.
+  async artist(id) {
+    const [o, albums] = await Promise.all([
+      gql("queryArtistOverview", { uri: id, locale: "", preReleaseV2: false }),
+      (async () => {
+        const out = [];
+        for (let offset = 0; offset < 300; offset += 50) {
+          const page = walk((await gql("queryArtistDiscographyAll", { uri: id, offset, limit: 50, order: "DATE_DESC" })).data, "spotify:album:");
+          out.push(...page);
+          if (page.length < 50) break;
+        }
+        return out;
+      })().catch(() => []),
+    ]);
+    const a = o.data?.artistUnion || {}, disc = a.discography || {};
+    const cap = x => x ? x[0] + x.slice(1).toLowerCase() : null;
+    const rel = albums.length ? albums : walk([disc.popularReleasesAlbums, disc.albums, disc.singles, disc.compilations], "spotify:album:");
+    return {
+      name: a.profile?.name || "",
+      art: (a.visuals?.avatarImage?.sources || []).sort((x, y) => (y.width || 0) - (x.width || 0))[0]?.url,
+      tracks: walk(disc.topTracks || {}, "spotify:track:").map(d => track(d)),
+      albums: rel.map(x => ({ id: x.uri, title: x.name, subtitle: [cap(x.type), x.date?.year].filter(Boolean).join(" · "), art: art(x) })),
+    };
+  },
   async home() {
     const errs = [];
     try { const t = await paged("fetchLibraryTracks", {}, 50, null, 100); if (t.length) return t; } catch (e) { errs.push(String(e.message || e)); }
@@ -127,11 +152,18 @@ const plugin = {
   },
   async collection(id) {
     if (id === "liked") return paged("fetchLibraryTracks", {}, 50);
-    if (id.startsWith("spotify:artist:")) {
-      const r = await gql("queryArtistOverview", { uri: id, locale: "", preReleaseV2: false });
-      return walk(r.data?.artistUnion?.discography?.topTracks || {}, "spotify:track:").map(d => track(d));
+    if (id.startsWith("spotify:artist:")) return (await this.artist(id)).tracks;
+    if (id.startsWith("spotify:album:")) {
+      const out = []; let album = null;
+      for (let offset = 0; offset < 500; offset += 50) {
+        const u = (await gql("getAlbum", { uri: id, locale: "", offset, limit: 50 })).data?.albumUnion || {};
+        album = album || u;
+        const page = walk(u.tracksV2 || u.tracks || {}, "spotify:track:");
+        out.push(...page.map(d => track(d, album)));
+        if (page.length < 50) break;
+      }
+      return out;
     }
-    if (id.startsWith("spotify:album:")) return paged("getAlbum", { uri: id, locale: "" }, 50, null, 500);
     return paged("fetchPlaylist", { uri: id, enableWatchFeedEntrypoint: false }, 100);
   },
 };
