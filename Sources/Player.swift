@@ -9,6 +9,8 @@ import Observation
     var playing = false
     var progress = 0.0
     var error: String?
+    var loading = false
+    var duration: Double? { av.currentItem?.duration.seconds.nanSafe ?? current?.duration }
     /// Most recent first, de-duplicated, persisted to Application Support/history.json.
     var history: [Track] = (try? JSONDecoder().decode([Track].self, from: Data(contentsOf: Player.historyFile))) ?? []
     static let historyFile = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appending(path: "SpotubeLite-history.json")
@@ -33,17 +35,26 @@ import Observation
     func play(_ tracks: [Track], at i: Int) { queue = tracks; index = i; load() }
     func next() { if index + 1 < queue.count { index += 1; load() } else { playing = false } }
     func prev() { if progress > 3 || index == 0 { av.seek(to: .zero) } else { index -= 1; load() } }
-    func toggle() { playing ? av.pause() : av.play(); playing.toggle(); nowPlaying() }
+    func toggle() {
+        guard av.currentItem != nil else { if current != nil, !loading { load() }; return }
+        playing ? av.pause() : av.play(); playing.toggle(); nowPlaying()
+    }
     func seek(_ s: Double) { av.seek(to: .init(seconds: s, preferredTimescale: 600)) }
+
+    func playNext(_ t: Track) {
+        if queue.isEmpty { play([t], at: 0) } else { queue.insert(t, at: min(index + 1, queue.count)) }
+    }
 
     private func load() {
         guard let t = current, let pm = plugins else { return }
         // Active audio plugin first, then every other audio plugin as fallback.
         let sources = ([pm.audio] + pm.plugins.filter { $0.abilities.contains("audio") && $0.id != pm.audio?.id }).compactMap { $0 }
         guard !sources.isEmpty else { error = "No audio plugin"; return }
-        error = nil; progress = 0
+        error = nil; progress = 0; loading = true
+        av.pause(); av.replaceCurrentItem(with: nil)
         Task {
             var errs: [String] = []
+            defer { if t == current { loading = false } }
             for src in sources {
                 do {
                     let s: StreamResult = try await src.call("stream", [try JSONSerialization.jsonObject(with: JSONEncoder().encode(t))])
@@ -53,12 +64,21 @@ import Observation
                     let playURL = (s.headers != nil && !u.isFileURL)
                         ? try await ChunkedDownload.file(u, headers: s.headers ?? [:], key: "\(src.id)-\(t.id)") : u
                     guard t == current else { return }
-                    av.replaceCurrentItem(with: AVPlayerItem(url: playURL)); av.play(); playing = true
+                    let item = AVPlayerItem(url: playURL)
+                    av.replaceCurrentItem(with: item); av.play()
+                    // Make sure it actually plays; a broken file/stream falls through to the next source.
+                    for _ in 0..<150 where item.status == .unknown { try await Task.sleep(for: .milliseconds(100)) }
+                    guard t == current else { return }
+                    if item.status != .readyToPlay {
+                        if playURL.isFileURL { try? FileManager.default.removeItem(at: playURL) }
+                        throw item.error ?? NSError(domain: "audio", code: 2, userInfo: [NSLocalizedDescriptionKey: "Couldn't open audio"])
+                    }
+                    playing = true
                     error = errs.isEmpty ? nil : "via \(src.name)"; nowPlaying(); remember(t)
                     prefetch(after: t, using: src); return
                 } catch { errs.append("\(src.name): \(error.localizedDescription)") }
             }
-            if t == current { self.error = errs.joined(separator: " · ") }
+            if t == current { self.error = errs.joined(separator: " · "); playing = false }
         }
     }
 

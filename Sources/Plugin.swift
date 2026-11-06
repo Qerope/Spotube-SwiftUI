@@ -186,7 +186,9 @@ extension Data {
                            "-f", "bestaudio[ext=m4a]/bestaudio[acodec^=mp4a]", "-o", tmp.path, url]
             p.environment = ["PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin", "HOME": NSHomeDirectory()]
             let err = Pipe(); p.standardError = err; p.standardOutput = FileHandle.nullDevice
-            try p.run(); p.waitUntilExit()
+            try p.run()
+            DispatchQueue.global().asyncAfter(deadline: .now() + 90) { if p.isRunning { p.terminate() } }
+            p.waitUntilExit()
             guard p.terminationStatus == 0, FileManager.default.fileExists(atPath: tmp.path) else {
                 let msg = String(data: err.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
                     .split(separator: "\n").last { $0.contains("ERROR") }.map(String.init) ?? "exit \(p.terminationStatus)"

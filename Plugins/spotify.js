@@ -75,7 +75,8 @@ const track = (d, album) => ({
   artist: (d.artists?.items || []).map(a => a.profile?.name).filter(Boolean).join(", "),
   album: d.albumOfTrack?.name || album?.name, art: art(d.albumOfTrack) || art(album),
   duration: ((d.duration || d.trackDuration)?.totalMilliseconds || 0) / 1000,
-  extra: { uri: d.uri },
+  extra: Object.fromEntries(Object.entries({ uri: d.uri, albumUri: d.albumOfTrack?.uri || album?.uri,
+    artistUri: d.artists?.items?.[0]?.uri }).filter(([, v]) => v)),
 });
 async function paged(op, vars, limit, album, max = 1000) {
   const out = [];

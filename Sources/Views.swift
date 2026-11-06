@@ -4,17 +4,30 @@ import UniformTypeIdentifiers
 
 enum Page: Hashable { case home, search, plugins, collection(Collection) }
 
+/// Shared navigation state so the player (and menu bar) can jump to an artist/album.
+@MainActor @Observable final class Router {
+    var page: Page? = .home
+    var path = NavigationPath()
+    var showFull = false
+    func open(_ c: Collection) { showFull = false; path.append(c) }
+}
+
+extension Track {
+    var albumLink: Collection? { extra?["albumUri"].map { Collection(id: $0, title: album ?? "Album", art: art) } }
+    var artistLink: Collection? { extra?["artistUri"].map { Collection(id: $0, title: artist.components(separatedBy: ", ").first ?? artist, subtitle: "Artist") } }
+}
+
 struct RootView: View {
     @Environment(PluginManager.self) var pm
     @Environment(Player.self) var player
-    @State var page: Page? = .home
+    @Environment(Router.self) var router
     @State var lib: [Collection] = []
-    @State var full = false
     @Bindable var login = WebLogin.shared
 
     var body: some View {
+        @Bindable var router = router
         NavigationSplitView {
-            List(selection: $page) {
+            List(selection: $router.page) {
                 Label("Home", systemImage: "house").tag(Page.home)
                 Label("Search", systemImage: "magnifyingglass").tag(Page.search)
                 Label("Plugins", systemImage: "puzzlepiece.extension").tag(Page.plugins)
@@ -29,21 +42,24 @@ struct RootView: View {
             .task(id: pm.metadata?.id) { await loadLib() }
             .refreshable { await loadLib() }
         } detail: {
-            NavigationStack {
-                switch page ?? .home {
-                case .home: HomeView()
-                case .search: SearchView()
-                case .plugins: PluginsView(reloadLibrary: { Task { await loadLib() } })
-                case .collection(let c): CollectionView(c: c).id(c.id)
+            NavigationStack(path: $router.path) {
+                Group {
+                    switch router.page ?? .home {
+                    case .home: HomeView()
+                    case .search: SearchView()
+                    case .plugins: PluginsView(reloadLibrary: { Task { await loadLib() } })
+                    case .collection(let c): CollectionView(c: c).id(c.id)
+                    }
                 }
-            }
-            .navigationDestination(for: Collection.self) { c in
-                if c.id.hasPrefix("spotify:artist:"), pm.metadata?.has("artist") == true { ArtistView(c: c) } else { CollectionView(c: c) }
+                .navigationDestination(for: Collection.self) { c in
+                    if c.id.hasPrefix("spotify:artist:"), pm.metadata?.has("artist") == true { ArtistView(c: c) } else { CollectionView(c: c) }
+                }
             }
             .background(.black)
         }
-        .safeAreaInset(edge: .bottom) { if player.current != nil { MiniPlayer().onTapGesture { full = true } } }
-        .sheet(isPresented: $full) { FullPlayer() }
+        .onChange(of: router.page) { router.path = NavigationPath() }
+        .safeAreaInset(edge: .bottom) { if player.current != nil { MiniPlayer() } }
+        .sheet(isPresented: $router.showFull) { FullPlayer() }
         .sheet(isPresented: Binding(get: { login.url != nil }, set: { if !$0 { login.cancel() } })) {
             VStack(spacing: 0) {
                 HStack { Text("Log in").font(.headline); Spacer(); Button("Cancel") { login.cancel() } }.padding()
@@ -56,6 +72,21 @@ struct RootView: View {
     func loadLib() async {
         guard let m = pm.metadata, m.has("library") else { lib = []; return }
         lib = (try? await m.call("library")) ?? []
+    }
+}
+
+/// Track title/artist that jump to the album/artist page when clicked.
+struct TrackLinks: View {
+    @Environment(Router.self) var router
+    let t: Track
+    var titleFont: Font = .body
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Button { if let a = t.albumLink { router.open(a) } } label: { Text(t.title).font(titleFont).lineLimit(1) }
+                .buttonStyle(.plain).disabled(t.albumLink == nil).help(t.album.map { "Go to \($0)" } ?? "")
+            Button { if let a = t.artistLink { router.open(a) } } label: { Text(t.artist).font(.caption).foregroundStyle(.secondary).lineLimit(1) }
+                .buttonStyle(.plain).disabled(t.artistLink == nil).help("Go to artist")
+        }
     }
 }
 
@@ -104,6 +135,7 @@ struct TrackList<Header: View>: View {
                     if let d = t.duration, d > 0 { Text(d.mmss).font(.caption.monospacedDigit()).foregroundStyle(.secondary) }
                 }.contentShape(Rectangle())
             }.buttonStyle(.plain).listRowBackground(Color.black)
+            .contextMenu { TrackMenu(t: t) }
     }
 }
 extension TrackList where Header == EmptyView {
@@ -249,19 +281,25 @@ extension Binding where Value == String {
 
 struct MiniPlayer: View {
     @Environment(Player.self) var p
+    @Environment(Router.self) var router
     var body: some View {
         HStack {
-            Art(url: p.current?.art, size: 40)
-            VStack(alignment: .leading) {
-                Text(p.current?.title ?? "").lineLimit(1)
-                Text(p.error ?? p.current?.artist ?? "").font(.caption).foregroundStyle(p.error == nil ? .secondary : Color.red).lineLimit(1)
+            Button { router.showFull = true } label: { Art(url: p.current?.art, size: 40) }.buttonStyle(.plain).help("Now playing")
+            VStack(alignment: .leading, spacing: 2) {
+                if let t = p.current { TrackLinks(t: t) }
+                if p.loading { Text("Loading…").font(.caption2).foregroundStyle(.secondary) }
+                else if let e = p.error { Text(e).font(.caption2).foregroundStyle(e.hasPrefix("via") ? Color.secondary : Color.red).lineLimit(1) }
             }.frame(maxWidth: 260, alignment: .leading)
             Spacer()
             Button { p.prev() } label: { Image(systemName: "backward.fill") }
-            Button { p.toggle() } label: { Image(systemName: p.playing ? "pause.fill" : "play.fill").font(.title2) }
+            Button { p.toggle() } label: {
+                if p.loading { ProgressView().controlSize(.small).frame(width: 24) }
+                else { Image(systemName: p.playing ? "pause.fill" : "play.fill").font(.title2) }
+            }
             Button { p.next() } label: { Image(systemName: "forward.fill") }
             Spacer()
-            Text("\(p.progress.mmss) / \((p.current?.duration ?? 0).mmss)").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+            Text("\(p.progress.mmss) / \((p.duration ?? 0).mmss)").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+            Button { router.showFull = true } label: { Image(systemName: "chevron.up") }
         }
         .buttonStyle(.plain).font(.title3)
         .padding(10).background(Color(white: 0.06), in: RoundedRectangle(cornerRadius: 12)).padding(8).foregroundStyle(.white)
@@ -276,8 +314,8 @@ struct FullPlayer: View {
             HStack { Spacer(); Button { dismiss() } label: { Image(systemName: "chevron.down") }.buttonStyle(.plain) }
             Spacer()
             Art(url: p.current?.art, size: 320)
-            VStack { Text(p.current?.title ?? "").font(.title2.bold()); Text(p.current?.artist ?? "").foregroundStyle(.secondary) }.lineLimit(1)
-            let d = max(p.av.currentItem?.duration.seconds.nanSafe ?? p.current?.duration ?? 1, 1)
+            if let t = p.current { TrackLinks(t: t, titleFont: .title2.bold()) }
+            let d = max(p.duration ?? 1, 1)
             Slider(value: Binding(get: { min(p.progress, d) }, set: { p.seek($0) }), in: 0...d)
             HStack(spacing: 48) {
                 Button { p.prev() } label: { Image(systemName: "backward.fill") }
@@ -338,5 +376,16 @@ struct ArtistView: View {
         .task(id: c.id) {
             do { page = try await pm.metadata?.call("artist", [c.id]); err = nil } catch { err = error.localizedDescription }
         }
+    }
+}
+
+struct TrackMenu: View {
+    @Environment(Router.self) var router
+    @Environment(Player.self) var player
+    let t: Track
+    var body: some View {
+        if let a = t.artistLink { Button("Go to Artist") { router.open(a) } }
+        if let a = t.albumLink { Button("Go to Album") { router.open(a) } }
+        Button("Play Next") { player.playNext(t) }
     }
 }
