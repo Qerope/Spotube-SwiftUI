@@ -9,6 +9,9 @@ import Observation
     var playing = false
     var progress = 0.0
     var error: String?
+    /// Most recent first, de-duplicated, persisted to Application Support/history.json.
+    var history: [Track] = (try? JSONDecoder().decode([Track].self, from: Data(contentsOf: Player.historyFile))) ?? []
+    static let historyFile = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appending(path: "SpotubeLite-history.json")
     var current: Track? { queue.indices.contains(index) ? queue[index] : nil }
     weak var plugins: PluginManager?
 
@@ -51,13 +54,21 @@ import Observation
                         ? try await ChunkedDownload.file(u, headers: s.headers ?? [:], key: "\(src.id)-\(t.id)") : u
                     guard t == current else { return }
                     av.replaceCurrentItem(with: AVPlayerItem(url: playURL)); av.play(); playing = true
-                    error = errs.isEmpty ? nil : "via \(src.name)"; nowPlaying()
+                    error = errs.isEmpty ? nil : "via \(src.name)"; nowPlaying(); remember(t)
                     prefetch(after: t, using: src); return
                 } catch { errs.append("\(src.name): \(error.localizedDescription)") }
             }
             if t == current { self.error = errs.joined(separator: " · ") }
         }
     }
+
+    private func remember(_ t: Track) {
+        history.removeAll { $0.id == t.id }
+        history.insert(t, at: 0)
+        if history.count > 500 { history.removeLast(history.count - 500) }
+        try? JSONEncoder().encode(history).write(to: Player.historyFile, options: .atomic)
+    }
+    func clearHistory() { history = []; try? FileManager.default.removeItem(at: Player.historyFile) }
 
     /// Warm the cache for the next track so it starts instantly.
     private func prefetch(after t: Track, using src: JSPlugin) {

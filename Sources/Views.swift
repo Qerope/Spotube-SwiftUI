@@ -110,7 +110,7 @@ extension TrackList where Header == EmptyView {
     init(tracks: [Track]) { self.init(tracks: tracks) { EmptyView() } }
 }
 
-struct SearchResult: Codable { var artists: [Collection]; var tracks: [Track] }
+struct SearchResult: Codable { var artists: [Collection]; var tracks: [Track]; var error: String? }
 
 struct Loader: View {
     let title: String; let fn: String; var args: [Any] = []
@@ -135,7 +135,14 @@ struct Loader: View {
     }
 }
 
-struct HomeView: View { var body: some View { Loader(title: "Home", fn: "home") } }
+struct HomeView: View {
+    @Environment(Player.self) var player
+    var body: some View {
+        TrackList(tracks: player.history).navigationTitle("Recently played")
+            .overlay { if player.history.isEmpty { ContentUnavailableView("Nothing played yet", systemImage: "clock", description: Text("Songs you play show up here.")) } }
+            .toolbar { if !player.history.isEmpty { Button("Clear") { player.clearHistory() } } }
+    }
+}
 struct CollectionView: View { let c: Collection; var body: some View { Loader(title: c.title, fn: "collection", args: [c.id]) } }
 
 struct SearchView: View {
@@ -171,7 +178,8 @@ struct SearchView: View {
             Task {
                 guard let m = pm.metadata else { return }
                 do {
-                    if m.has("searchAll") { let r: SearchResult = try await m.call("searchAll", [q]); artists = r.artists; tracks = r.tracks }
+                    if m.has("searchAll") { let r: SearchResult = try await m.call("searchAll", [q]); artists = r.artists; tracks = r.tracks
+                        err = r.error.map { "Artists: \($0)" }; return }
                     else { artists = []; tracks = try await m.call("search", [q]) }
                     err = nil
                 } catch { err = error.localizedDescription }

@@ -4,6 +4,7 @@ const UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (
 const GQL = "https://api-partner.spotify.com/pathfinder/v2/query";
 const NUANCES = "https://gist.githubusercontent.com/raw/22ed9c6ba463899e933427f7de1f0eef/nuances.json";
 const Q = {
+  searchArtists: "0e6f9020a66fe15b93b3bb5c7e6484d1d8cb3775963996eaede72bac4d97e909",
   searchDesktop: "d9f785900f0710b31c07818d617f4f7600c1e21217e80f5b043d1e78d74e6026",
   queryArtistDiscographyAll: "5e07d323febb57b4a56a42abbf781490e58764aa45feb6e3dc0591564fc56599",
   queryArtistOverview: "7f86ff63e38c24973a2842b672abe44c910c1973978dc8a4a0cb648edef34527",
@@ -101,17 +102,20 @@ const plugin = {
   // Home: Liked Songs; if Spotify rejects that query, fall back to your first playlist.
   // Artists first, then songs.
   async searchAll(q) {
-    try {
-      const r = await gql("searchDesktop", { searchTerm: q, offset: 0, limit: 10, numberOfTopResults: 5, includeAudiobooks: false,
-        includeArtistHasConcertsField: false, includePreReleases: true, includeLocalConcertsField: false, includeAuthors: false });
-      const sv = r.data?.searchV2 || {};
-      const artists = (sv.artists?.items || []).map(i => i.data).filter(a => a?.uri?.startsWith("spotify:artist:"))
-        .map(a => ({ id: a.uri, title: a.profile?.name || "", subtitle: "Artist", art: (a.visuals?.avatarImage?.sources || []).sort((x, y) => (y.width || 0) - (x.width || 0))[0]?.url }));
-      const tracks = walk(sv.tracksV2 || {}, "spotify:track:").map(d => track(d));
-      return { artists, tracks: tracks.length ? tracks : await this.search(q) };
-    } catch (e) {
-      return { artists: [], tracks: await this.search(q) };
-    }
+    const vars = { searchTerm: q, offset: 0, limit: 10, numberOfTopResults: 10, includeAudiobooks: false, includePreReleases: false, includeAuthors: false };
+    const [ar, tracks] = await Promise.all([gql("searchArtists", vars).catch(e => ({ error: String(e.message || e) })), this.search(q)]);
+    const artists = [], seen = new Set();
+    (function find(x) {
+      if (Array.isArray(x)) return x.forEach(find);
+      if (!x || typeof x !== "object") return;
+      if (typeof x.uri === "string" && x.uri.startsWith("spotify:artist:") && x.profile?.name) {
+        if (!seen.has(x.uri)) { seen.add(x.uri); artists.push({ id: x.uri, title: x.profile.name, subtitle: "Artist",
+          art: [...(x.visuals?.avatarImage?.sources || [])].sort((a, b) => (b.width || 0) - (a.width || 0))[0]?.url }); }
+        return;
+      }
+      for (const k in x) find(x[k]);
+    })(ar.data);
+    return { artists, tracks, error: ar.error };
   },
   // Artist page: top tracks + full discography (albums, singles, compilations), newest first.
   async artist(id) {

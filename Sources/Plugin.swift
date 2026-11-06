@@ -96,8 +96,13 @@ import WebKit
     var audioID = UserDefaults.standard.string(forKey: "audioPlugin") { didSet { UserDefaults.standard.set(audioID, forKey: "audioPlugin") } }
     let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appending(path: "Plugins")
 
-    var metadata: JSPlugin? { plugins.first { $0.id == metadataID } ?? plugins.first { $0.abilities.contains("metadata") } }
-    var audio: JSPlugin? { plugins.first { $0.id == audioID } ?? plugins.first { $0.abilities.contains("audio") } }
+    var metadata: JSPlugin? { plugins.first { $0.id == metadataID } ?? preferred("metadata") }
+    var audio: JSPlugin? { plugins.first { $0.id == audioID } ?? preferred("audio") }
+    /// Default choice: any real plugin before the bundled iTunes previews sample.
+    private func preferred(_ ability: String) -> JSPlugin? {
+        let c = plugins.filter { $0.abilities.contains(ability) }
+        return c.first { $0.id != "itunes" } ?? c.first
+    }
 
     init() {
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
