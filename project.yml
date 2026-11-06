@@ -1,9 +1,9 @@
 name: SpotubeLite
-options: { bundleIdPrefix: dev.qerope, deploymentTarget: { iOS: "17.0" } }
+options: { bundleIdPrefix: dev.qerope, deploymentTarget: { macOS: "14.0", iOS: "17.0" } }
 targets:
   SpotubeLite:
     type: application
-    platform: iOS
+    supportedDestinations: [macOS, iOS]
     sources: [Sources, { path: Plugins, buildPhase: resources }]
     info:
       path: Sources/Info.plist
@@ -11,4 +11,11 @@ targets:
         UIBackgroundModes: [audio]
         UILaunchScreen: { UIColorName: "" }
         CFBundleDisplayName: Spotube Lite
-    settings: { SWIFT_VERSION: "5.0", GENERATE_INFOPLIST_FILE: YES, CODE_SIGN_STYLE: Automatic }
+        LSApplicationCategoryType: public.app-category.music
+    entitlements:
+      path: Sources/App.entitlements
+      properties:
+        com.apple.security.app-sandbox: true
+        com.apple.security.network.client: true
+        com.apple.security.files.user-selected.read-only: true
+    settings: { SWIFT_VERSION: "5.0", GENERATE_INFOPLIST_FILE: YES, CODE_SIGN_STYLE: Automatic, CODE_SIGN_IDENTITY: "-" }

@@ -34,14 +34,23 @@ import Observation
     func seek(_ s: Double) { av.seek(to: .init(seconds: s, preferredTimescale: 600)) }
 
     private func load() {
-        guard let t = current, let src = plugins?.audio else { error = "No audio plugin"; return }
+        guard let t = current, let pm = plugins else { return }
+        // Active audio plugin first, then every other audio plugin as fallback.
+        let sources = ([pm.audio] + pm.plugins.filter { $0.abilities.contains("audio") && $0.id != pm.audio?.id }).compactMap { $0 }
+        guard !sources.isEmpty else { error = "No audio plugin"; return }
         error = nil; progress = 0
         Task {
-            do {
-                let s: String = try await src.call("stream", [try JSONSerialization.jsonObject(with: JSONEncoder().encode(t))])
-                guard let u = URL(string: s), t == current else { return }
-                av.replaceCurrentItem(with: AVPlayerItem(url: u)); av.play(); playing = true; nowPlaying()
-            } catch { self.error = error.localizedDescription }
+            var errs: [String] = []
+            for src in sources {
+                do {
+                    let s: String = try await src.call("stream", [try JSONSerialization.jsonObject(with: JSONEncoder().encode(t))])
+                    guard let u = URL(string: s) else { continue }
+                    guard t == current else { return }
+                    av.replaceCurrentItem(with: AVPlayerItem(url: u)); av.play(); playing = true
+                    error = errs.isEmpty ? nil : "via \(src.name)"; nowPlaying(); return
+                } catch { errs.append("\(src.name): \(error.localizedDescription)") }
+            }
+            if t == current { self.error = errs.joined(separator: " · ") }
         }
     }
 

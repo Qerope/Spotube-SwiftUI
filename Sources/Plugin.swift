@@ -1,9 +1,10 @@
 import Foundation
 import JavaScriptCore
 import Observation
+import CryptoKit
+import WebKit
 
-/// Plugin = one JS file defining `const plugin = { name, version, author, abilities: ["metadata","audio"], ... }`.
-/// metadata: search(q) -> [Track], home() -> [Track] (optional) ; audio: stream(track) -> url string
+/// Plugin = one JS file defining `const plugin = { name, version, author, abilities: [...], ... }`. See README.
 @MainActor final class JSPlugin: Identifiable {
     let id: String, name: String, version: String, abilities: [String], file: URL
     private let ctx = JSContext()!
@@ -19,6 +20,7 @@ import Observation
             r.httpMethod = o["method"] as? String ?? "GET"
             (o["headers"] as? [String: String])?.forEach { r.setValue($1, forHTTPHeaderField: $0) }
             if let b = o["body"] as? String { r.httpBody = Data(b.utf8) }
+            if r.value(forHTTPHeaderField: "Cookie") != nil { r.httpShouldHandleCookies = false }
             URLSession.shared.dataTask(with: r) { d, resp, err in
                 let s = (resp as? HTTPURLResponse)?.statusCode ?? 0
                 let body = d.flatMap { String(data: $0, encoding: .utf8) } ?? ""
@@ -26,15 +28,33 @@ import Observation
             }.resume()
         }
         let pid = file.deletingPathExtension().lastPathComponent
-        let get: @convention(block) (String) -> Any = { UserDefaults.standard.string(forKey: "pl.\(pid).\($0)") ?? NSNull() }
+        let get: @convention(block) (String) -> Any = { UserDefaults.standard.string(forKey: "pl.\(pid).\($0)").flatMap { $0.isEmpty ? nil : $0 } ?? NSNull() }
         let set: @convention(block) (String, String) -> Void = { UserDefaults.standard.set($1, forKey: "pl.\(pid).\($0)") }
+        let hmac: @convention(block) (String, String, String) -> String = { algo, k, d in
+            let key = SymmetricKey(data: Data(hex: k)), msg = Data(hex: d)
+            switch algo {
+            case "sha256": return Data(HMAC<SHA256>.authenticationCode(for: msg, using: key)).hex
+            case "sha512": return Data(HMAC<SHA512>.authenticationCode(for: msg, using: key)).hex
+            default: return Data(HMAC<Insecure.SHA1>.authenticationCode(for: msg, using: key)).hex
+            }
+        }
+        let cookie: @convention(block) (String, String, JSValue) -> Void = { url, name, cb in
+            Task { @MainActor in
+                do { cb.call(withArguments: [try await WebLogin.shared.cookie(url: url, name: name), NSNull()]) }
+                catch { cb.call(withArguments: [NSNull(), error.localizedDescription]) }
+            }
+        }
+        ctx.setObject(hmac, forKeyedSubscript: "__hmac" as NSString)
+        ctx.setObject(cookie, forKeyedSubscript: "__cookie" as NSString)
         ctx.setObject(fetch, forKeyedSubscript: "__fetch" as NSString)
         ctx.setObject(get, forKeyedSubscript: "__lsGet" as NSString)
         ctx.setObject(set, forKeyedSubscript: "__lsSet" as NSString)
         ctx.evaluateScript("""
         globalThis.console={log:(...a)=>{}};
         globalThis.fetch=(u,o={})=>new Promise((res,rej)=>__fetch(String(u),JSON.stringify(o),(s,b,e)=>e?rej(new Error(e)):res({status:s,ok:s<400,text:async()=>b,json:async()=>JSON.parse(b)})));
-        globalThis.localStorage={getItem:k=>__lsGet(k),setItem:(k,v)=>__lsSet(k,String(v))};
+        globalThis.localStorage={getItem:k=>__lsGet(k),setItem:(k,v)=>__lsSet(k,String(v)),removeItem:k=>__lsSet(k,"")};
+        globalThis.crypto={hmac:(a,kHex,dHex)=>__hmac(a,kHex,dHex)};
+        globalThis.webview={cookie:(u,n)=>new Promise((res,rej)=>__cookie(u,n,(v,e)=>e?rej(new Error(e)):res(v)))};
         """)
         ctx.evaluateScript(src + "\n;globalThis.plugin=plugin;")
         ctx.evaluateScript("globalThis.__call=(n,a,cb)=>Promise.resolve().then(()=>plugin[n](...JSON.parse(a))).then(r=>cb(JSON.stringify(r??null),null),e=>cb(null,String(e)));")
@@ -92,4 +112,41 @@ import Observation
     }
 
     func remove(_ p: JSPlugin) { try? FileManager.default.removeItem(at: p.file); reload() }
+}
+
+extension Data {
+    init(hex: String) {
+        var d = Data(), i = hex.startIndex
+        while let j = hex.index(i, offsetBy: 2, limitedBy: hex.endIndex), i < j { d.append(UInt8(hex[i..<j], radix: 16) ?? 0); i = j }
+        self = d
+    }
+    var hex: String { map { String(format: "%02x", $0) }.joined() }
+}
+
+/// Native webview used by plugins for login: opens `url`, resolves once cookie `name` appears.
+@MainActor @Observable final class WebLogin: NSObject, WKNavigationDelegate {
+    static let shared = WebLogin()
+    var url: URL?
+    @ObservationIgnored private var name = ""
+    @ObservationIgnored private var cont: CheckedContinuation<String, Error>?
+    @ObservationIgnored let web = WKWebView(frame: .zero, configuration: { let c = WKWebViewConfiguration(); c.websiteDataStore = .nonPersistent(); return c }())
+
+    func cookie(url: String, name: String) async throws -> String {
+        cont?.resume(throwing: CancellationError())
+        self.name = name; web.navigationDelegate = self
+        return try await withCheckedThrowingContinuation { c in
+            cont = c; self.url = URL(string: url); web.load(URLRequest(url: self.url!))
+        }
+    }
+    func cancel() { url = nil; cont?.resume(throwing: CancellationError()); cont = nil }
+    nonisolated func webView(_ w: WKWebView, didFinish _: WKNavigation!) { Task { @MainActor in check() } }
+    nonisolated func webView(_ w: WKWebView, didCommit _: WKNavigation!) { Task { @MainActor in check() } }
+    private func check() {
+        web.configuration.websiteDataStore.httpCookieStore.getAllCookies { cs in
+            Task { @MainActor in
+                guard let v = cs.first(where: { $0.name == self.name })?.value, let c = self.cont else { return }
+                self.cont = nil; self.url = nil; c.resume(returning: v)
+            }
+        }
+    }
 }

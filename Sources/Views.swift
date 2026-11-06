@@ -1,21 +1,73 @@
 import SwiftUI
+import WebKit
 import UniformTypeIdentifiers
+
+enum Page: Hashable { case home, search, plugins, collection(Collection) }
 
 struct RootView: View {
     @Environment(PluginManager.self) var pm
     @Environment(Player.self) var player
+    @State var page: Page? = .home
+    @State var lib: [Collection] = []
     @State var full = false
+    @Bindable var login = WebLogin.shared
+
     var body: some View {
-        TabView {
-            NavigationStack { HomeView() }.tabItem { Label("Home", systemImage: "house") }
-            NavigationStack { SearchView() }.tabItem { Label("Search", systemImage: "magnifyingglass") }
-            NavigationStack { PluginsView() }.tabItem { Label("Plugins", systemImage: "puzzlepiece.extension") }
+        NavigationSplitView {
+            List(selection: $page) {
+                Label("Home", systemImage: "house").tag(Page.home)
+                Label("Search", systemImage: "magnifyingglass").tag(Page.search)
+                Label("Plugins", systemImage: "puzzlepiece.extension").tag(Page.plugins)
+                Section("Library") {
+                    ForEach(lib) { c in
+                        Label { Text(c.title).lineLimit(1) } icon: { Art(url: c.art, size: 22) }.tag(Page.collection(c))
+                    }
+                }
+            }
+            .scrollContentBackground(.hidden).background(.black)
+            .navigationSplitViewColumnWidth(min: 200, ideal: 230)
+            .task(id: pm.metadata?.id) { await loadLib() }
+            .refreshable { await loadLib() }
+        } detail: {
+            NavigationStack {
+                switch page ?? .home {
+                case .home: HomeView()
+                case .search: SearchView()
+                case .plugins: PluginsView(reloadLibrary: { Task { await loadLib() } })
+                case .collection(let c): CollectionView(c: c).id(c.id)
+                }
+            }.background(.black)
         }
-        .safeAreaInset(edge: .bottom) { if player.current != nil { MiniPlayer().onTapGesture { full = true }.padding(.bottom, 52) } }
+        .safeAreaInset(edge: .bottom) { if player.current != nil { MiniPlayer().onTapGesture { full = true } } }
         .sheet(isPresented: $full) { FullPlayer() }
+        .sheet(isPresented: Binding(get: { login.url != nil }, set: { if !$0 { login.cancel() } })) {
+            VStack(spacing: 0) {
+                HStack { Text("Log in").font(.headline); Spacer(); Button("Cancel") { login.cancel() } }.padding()
+                WebViewBox(web: login.web)
+            }.frame(minWidth: 480, minHeight: 640)
+        }
         .onAppear { player.plugins = pm }
     }
+
+    func loadLib() async {
+        guard let m = pm.metadata, m.has("library") else { lib = []; return }
+        lib = (try? await m.call("library")) ?? []
+    }
 }
+
+#if os(macOS)
+struct WebViewBox: NSViewRepresentable {
+    let web: WKWebView
+    func makeNSView(context: Context) -> WKWebView { web }
+    func updateNSView(_: WKWebView, context: Context) {}
+}
+#else
+struct WebViewBox: UIViewRepresentable {
+    let web: WKWebView
+    func makeUIView(context: Context) -> WKWebView { web }
+    func updateUIView(_: WKWebView, context: Context) {}
+}
+#endif
 
 struct Art: View {
     let url: String?; var size: CGFloat = 48
@@ -32,29 +84,41 @@ struct TrackList: View {
         List(Array(tracks.enumerated()), id: \.offset) { i, t in
             Button { player.play(tracks, at: i) } label: {
                 HStack {
-                    Art(url: t.art)
+                    Art(url: t.art, size: 40)
                     VStack(alignment: .leading) {
                         Text(t.title).foregroundStyle(player.current == t ? .green : .white).lineLimit(1)
                         Text(t.artist).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                     }
-                }
-            }.listRowBackground(Color.black)
+                    Spacer()
+                    if let a = t.album { Text(a).font(.caption).foregroundStyle(.secondary).lineLimit(1).frame(maxWidth: 220, alignment: .leading) }
+                    if let d = t.duration, d > 0 { Text(d.mmss).font(.caption.monospacedDigit()).foregroundStyle(.secondary) }
+                }.contentShape(Rectangle())
+            }.buttonStyle(.plain).listRowBackground(Color.black)
         }.listStyle(.plain).scrollContentBackground(.hidden).background(.black)
     }
 }
 
-struct HomeView: View {
+struct Loader: View {
+    let title: String; let fn: String; var args: [Any] = []
     @Environment(PluginManager.self) var pm
     @State var tracks: [Track] = []
+    @State var err: String?
     var body: some View {
-        TrackList(tracks: tracks).navigationTitle("Spotube Lite")
-            .overlay { if tracks.isEmpty { ContentUnavailableView("Nothing here", systemImage: "music.note", description: Text(pm.metadata?.name ?? "Install a metadata plugin")) } }
+        TrackList(tracks: tracks).navigationTitle(title)
+            .overlay {
+                if let err { ContentUnavailableView("Error", systemImage: "exclamationmark.triangle", description: Text(err)) }
+                else if tracks.isEmpty { ProgressView() }
+            }
             .task(id: pm.metadata?.id) {
-                guard let m = pm.metadata, m.has("home") else { return }
-                tracks = (try? await m.call("home")) ?? []
+                guard let m = pm.metadata else { err = "Install a metadata plugin"; return }
+                guard m.has(fn) else { err = "\(m.name) has no \(fn)()"; return }
+                do { tracks = try await m.call(fn, args); err = tracks.isEmpty ? "Nothing here" : nil } catch { err = error.localizedDescription }
             }
     }
 }
+
+struct HomeView: View { var body: some View { Loader(title: "Home", fn: "home") } }
+struct CollectionView: View { let c: Collection; var body: some View { Loader(title: c.title, fn: "collection", args: [c.id]) } }
 
 struct SearchView: View {
     @Environment(PluginManager.self) var pm
@@ -63,7 +127,7 @@ struct SearchView: View {
     @State var err: String?
     var body: some View {
         TrackList(tracks: tracks).navigationTitle("Search")
-            .searchable(text: $q).onSubmit(of: .search) {
+            .searchable(text: $q, placement: .toolbar).onSubmit(of: .search) {
                 Task {
                     do { tracks = try await pm.metadata?.call("search", [q]) ?? []; err = nil } catch { err = error.localizedDescription }
                 }
@@ -74,9 +138,10 @@ struct SearchView: View {
 
 struct PluginsView: View {
     @Environment(PluginManager.self) var pm
+    var reloadLibrary: () -> Void
     @State var url = ""
     @State var importing = false
-    @State var err: String?
+    @State var msg: String?
     var body: some View {
         @Bindable var pm = pm
         Form {
@@ -90,24 +155,38 @@ struct PluginsView: View {
             }
             Section("Installed") {
                 ForEach(pm.plugins) { p in
-                    VStack(alignment: .leading) {
-                        Text(p.name); Text("v\(p.version) · \(p.abilities.joined(separator: ", "))").font(.caption).foregroundStyle(.secondary)
-                    }.swipeActions { Button("Delete", role: .destructive) { pm.remove(p) } }
+                    HStack {
+                        VStack(alignment: .leading) {
+                            Text(p.name)
+                            Text("v\(p.version) · \(p.abilities.joined(separator: ", "))").font(.caption).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        if p.has("login") {
+                            Button("Log in") { run(p, "login") }
+                            Button("Log out") { run(p, "logout") }
+                        }
+                        Button(role: .destructive) { pm.remove(p) } label: { Image(systemName: "trash") }.buttonStyle(.borderless)
+                    }
                 }
             }
             Section("Install") {
-                TextField("https://…/plugin.js", text: $url).textInputAutocapitalization(.never).keyboardType(.URL)
+                TextField("https://…/plugin.js", text: $url)
                 Button("Install from URL") { Task { await install(URL(string: url)) } }
-                Button("Install from Files") { importing = true }
-                if let err { Text(err).foregroundStyle(.red) }
+                Button("Install from file…") { importing = true }
+                if let msg { Text(msg).foregroundStyle(.secondary) }
             }
         }
-        .scrollContentBackground(.hidden).background(.black).navigationTitle("Plugins")
+        .formStyle(.grouped).scrollContentBackground(.hidden).background(.black).navigationTitle("Plugins")
         .fileImporter(isPresented: $importing, allowedContentTypes: [.javaScript, .plainText]) { r in Task { await install(try? r.get()) } }
+    }
+    func run(_ p: JSPlugin, _ fn: String) {
+        Task {
+            do { let _: String? = try await p.call(fn); msg = "\(p.name): \(fn) ok"; reloadLibrary() } catch { msg = error.localizedDescription }
+        }
     }
     func install(_ u: URL?) async {
         guard let u else { return }
-        do { try await pm.install(from: u); err = nil } catch { err = error.localizedDescription }
+        do { try await pm.install(from: u); msg = "Installed" } catch { msg = error.localizedDescription }
     }
 }
 
@@ -123,32 +202,41 @@ struct MiniPlayer: View {
             VStack(alignment: .leading) {
                 Text(p.current?.title ?? "").lineLimit(1)
                 Text(p.error ?? p.current?.artist ?? "").font(.caption).foregroundStyle(p.error == nil ? .secondary : Color.red).lineLimit(1)
-            }
+            }.frame(maxWidth: 260, alignment: .leading)
             Spacer()
+            Button { p.prev() } label: { Image(systemName: "backward.fill") }
             Button { p.toggle() } label: { Image(systemName: p.playing ? "pause.fill" : "play.fill").font(.title2) }
-            Button { p.next() } label: { Image(systemName: "forward.fill").font(.title2) }
+            Button { p.next() } label: { Image(systemName: "forward.fill") }
+            Spacer()
+            Text("\(p.progress.mmss) / \((p.current?.duration ?? 0).mmss)").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
         }
-        .padding(10).background(Color(white: 0.07), in: RoundedRectangle(cornerRadius: 12)).padding(.horizontal, 8).foregroundStyle(.white)
+        .buttonStyle(.plain).font(.title3)
+        .padding(10).background(Color(white: 0.06), in: RoundedRectangle(cornerRadius: 12)).padding(8).foregroundStyle(.white)
     }
 }
 
 struct FullPlayer: View {
     @Environment(Player.self) var p
+    @Environment(\.dismiss) var dismiss
     var body: some View {
         VStack(spacing: 24) {
+            HStack { Spacer(); Button { dismiss() } label: { Image(systemName: "chevron.down") }.buttonStyle(.plain) }
             Spacer()
             Art(url: p.current?.art, size: 320)
             VStack { Text(p.current?.title ?? "").font(.title2.bold()); Text(p.current?.artist ?? "").foregroundStyle(.secondary) }.lineLimit(1)
-            let d = max(p.current?.duration ?? p.av.currentItem?.duration.seconds.nanSafe ?? 1, 1)
+            let d = max(p.av.currentItem?.duration.seconds.nanSafe ?? p.current?.duration ?? 1, 1)
             Slider(value: Binding(get: { min(p.progress, d) }, set: { p.seek($0) }), in: 0...d)
             HStack(spacing: 48) {
                 Button { p.prev() } label: { Image(systemName: "backward.fill") }
                 Button { p.toggle() } label: { Image(systemName: p.playing ? "pause.circle.fill" : "play.circle.fill").font(.system(size: 64)) }
                 Button { p.next() } label: { Image(systemName: "forward.fill") }
-            }.font(.title).foregroundStyle(.white)
+            }.font(.title).buttonStyle(.plain).foregroundStyle(.white)
             Spacer()
-        }.padding(32).frame(maxWidth: .infinity).background(Color.black.ignoresSafeArea()).presentationBackground(.black)
+        }.padding(32).frame(minWidth: 420, minHeight: 600).frame(maxWidth: .infinity).background(Color.black.ignoresSafeArea()).presentationBackground(.black)
     }
 }
 
-extension Double { var nanSafe: Double? { isFinite ? self : nil } }
+extension Double {
+    var nanSafe: Double? { isFinite ? self : nil }
+    var mmss: String { let s = Int(isFinite ? self : 0); return String(format: "%d:%02d", s / 60, s % 60) }
+}
