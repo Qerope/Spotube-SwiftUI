@@ -11,9 +11,15 @@ Build: `brew install xcodegen && xcodegen && open SpotubeLite.xcodeproj` (scheme
 | `youtube.js` | audio | InnerTube search, match by duration/"Topic" channel. On macOS the audio is fetched by **yt-dlp** (decodes YouTube's signature/`n` param like NewPipeExtractor; needs `brew install yt-dlp deno`, done by `install-latest.sh`), cached in `~/Library/Caches/audio`, next track pre-fetched. Direct InnerTube streams are only a fallback (YouTube caps them at ~1 MB without a poToken). |
 | `itunes.js` | metadata, audio | 30 s previews; automatic audio fallback when YouTube fails. |
 
+## Player
+Shuffle, repeat (off / all / one), autoplay (continues with the artist's popular songs when the queue ends),
+queue panel (reorder, remove, play next / add to queue), volume, seek, menu-bar player, media keys and Now Playing.
+Tracks are resolved once and cached; the next two and previous track are pre-fetched, so skipping is instant.
+Queue, position and modes are restored on launch.
+
 ## Plugin API
 A plugin is one `.js` file defining `const plugin = { name, version, author, abilities, ... }`. Install via URL or file in the Plugins page.
-- **metadata**: `search(q)`, `searchAll(q)` → `{artists, tracks}`, `home()`, `library()` → `[{id,title,subtitle?,art?}]`, `collection(id)` → tracks, `artist(id)` → `{name, art, tracks, albums}`
+- **metadata**: `radio(track)` (optional, autoplay) → tracks, `search(q)`, `searchAll(q)` → `{artists, tracks}`, `home()`, `library()` → `[{id,title,subtitle?,art?}]`, `collection(id)` → tracks, `artist(id)` → `{name, art, tracks, albums}`
 - **audio**: `stream(track)` → playable URL, or `{url, headers}` (downloaded in bounded chunks)
 - **authentication**: `login()`, `logout()`
 - Track: `{id,title,artist,album?,art?,duration?(s),extra?:{string:string}}`

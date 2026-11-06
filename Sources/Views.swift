@@ -9,7 +9,8 @@ enum Page: Hashable { case home, search, plugins, collection(Collection) }
     var page: Page? = .home
     var path = NavigationPath()
     var showFull = false
-    func open(_ c: Collection) { showFull = false; path.append(c) }
+    var showQueue = false
+    func open(_ c: Collection) { showFull = false; showQueue = false; path.append(c) }
 }
 
 extension Track {
@@ -60,6 +61,7 @@ struct RootView: View {
         .onChange(of: router.page) { router.path = NavigationPath() }
         .safeAreaInset(edge: .bottom) { if player.current != nil { MiniPlayer() } }
         .sheet(isPresented: $router.showFull) { FullPlayer() }
+        .inspector(isPresented: $router.showQueue) { QueueView().inspectorColumnWidth(min: 260, ideal: 320) }
         .sheet(isPresented: Binding(get: { login.url != nil }, set: { if !$0 { login.cancel() } })) {
             VStack(spacing: 0) {
                 HStack { Text("Log in").font(.headline); Spacer(); Button("Cancel") { login.cancel() } }.padding()
@@ -280,30 +282,106 @@ extension Binding where Value == String {
     init(_ b: Binding<String?>, replacingNilWith d: String) { self.init(get: { b.wrappedValue ?? d }, set: { b.wrappedValue = $0 }) }
 }
 
+/// Shuffle / repeat / autoplay toggles shared by the mini and full players.
+struct ModeButtons: View {
+    @Environment(Player.self) var p
+    var body: some View {
+        @Bindable var p = p
+        Button { p.shuffle.toggle() } label: { Image(systemName: "shuffle").foregroundStyle(p.shuffle ? .green : .secondary) }.help("Shuffle")
+        Button { p.cycleRepeat() } label: {
+            Image(systemName: p.repeatMode == .one ? "repeat.1" : "repeat").foregroundStyle(p.repeatMode == .off ? .secondary : Color.green)
+        }.help("Repeat: \(p.repeatMode.rawValue)")
+        Button { p.autoplay.toggle() } label: { Image(systemName: "infinity").foregroundStyle(p.autoplay ? .green : .secondary) }
+            .help(p.autoplay ? "Autoplay on: keeps playing similar songs" : "Autoplay off")
+    }
+}
+
+struct SeekBar: View {
+    @Environment(Player.self) var p
+    @State var drag: Double?
+    var body: some View {
+        let d = max(p.duration ?? 1, 1)
+        HStack(spacing: 8) {
+            Text((drag ?? p.progress).mmss).frame(width: 40, alignment: .trailing)
+            Slider(value: Binding(get: { min(drag ?? p.progress, d) }, set: { drag = $0 }), in: 0...d) { editing in
+                if !editing, let v = drag { p.seek(v); drag = nil }
+            }.controlSize(.mini)
+            Text(d.mmss).frame(width: 40, alignment: .leading)
+        }.font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
+    }
+}
+
 struct MiniPlayer: View {
     @Environment(Player.self) var p
     @Environment(Router.self) var router
     var body: some View {
-        HStack {
-            Button { router.showFull = true } label: { Art(url: p.current?.art, size: 40) }.buttonStyle(.plain).help("Now playing")
+        @Bindable var p = p
+        HStack(spacing: 14) {
+            Button { router.showFull = true } label: { Art(url: p.current?.art, size: 44) }.buttonStyle(.plain).help("Now playing")
             VStack(alignment: .leading, spacing: 2) {
                 if let t = p.current { TrackLinks(t: t) }
                 if p.loading { Text("Loading…").font(.caption2).foregroundStyle(.secondary) }
                 else if let e = p.error { Text(e).font(.caption2).foregroundStyle(e.hasPrefix("via") ? Color.secondary : Color.red).lineLimit(1) }
-            }.frame(maxWidth: 260, alignment: .leading)
-            Spacer()
-            Button { p.prev() } label: { Image(systemName: "backward.fill") }
-            Button { p.toggle() } label: {
-                if p.loading { ProgressView().controlSize(.small).frame(width: 24) }
-                else { Image(systemName: p.playing ? "pause.fill" : "play.fill").font(.title2) }
+            }.frame(width: 220, alignment: .leading)
+            VStack(spacing: 4) {
+                HStack(spacing: 22) {
+                    ModeButtons().font(.callout)
+                    Button { p.prev() } label: { Image(systemName: "backward.fill") }
+                    Button { p.toggle() } label: {
+                        if p.loading { ProgressView().controlSize(.small).frame(width: 28, height: 28) }
+                        else { Image(systemName: p.playing ? "pause.circle.fill" : "play.circle.fill").font(.system(size: 30)) }
+                    }
+                    Button { p.next() } label: { Image(systemName: "forward.fill") }
+                }
+                SeekBar().frame(maxWidth: 520)
+            }.frame(maxWidth: .infinity)
+            HStack(spacing: 10) {
+                Image(systemName: p.volume == 0 ? "speaker.slash.fill" : "speaker.wave.2.fill").font(.caption).foregroundStyle(.secondary)
+                Slider(value: $p.volume, in: 0...1).controlSize(.mini).frame(width: 90)
+                Button { router.showQueue.toggle() } label: { Image(systemName: "list.bullet").foregroundStyle(router.showQueue ? .green : .primary) }.help("Queue")
+                Button { router.showFull = true } label: { Image(systemName: "chevron.up") }.help("Now playing")
             }
-            Button { p.next() } label: { Image(systemName: "forward.fill") }
-            Spacer()
-            Text("\(p.progress.mmss) / \((p.duration ?? 0).mmss)").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-            Button { router.showFull = true } label: { Image(systemName: "chevron.up") }
         }
         .buttonStyle(.plain).font(.title3)
-        .padding(10).background(Color(white: 0.06), in: RoundedRectangle(cornerRadius: 12)).padding(8).foregroundStyle(.white)
+        .padding(.horizontal, 14).padding(.vertical, 10)
+        .background(Color(white: 0.05), in: RoundedRectangle(cornerRadius: 14))
+        .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.white.opacity(0.06)))
+        .padding(8).foregroundStyle(.white)
+    }
+}
+
+struct QueueView: View {
+    @Environment(Player.self) var p
+    var body: some View {
+        List {
+            if let t = p.current {
+                Section("Now playing") { QueueRow(t: t, now: true) }
+            }
+            Section("Next up") {
+                ForEach(Array(p.upcoming.enumerated()), id: \.offset) { off, t in
+                    let i = p.index + 1 + off
+                    QueueRow(t: t).contentShape(Rectangle()).onTapGesture(count: 2) { p.jump(to: i) }
+                        .contextMenu { Button("Play") { p.jump(to: i) }; Button("Remove") { p.remove(at: i) } }
+                }
+                .onMove { from, to in p.move(from: IndexSet(from.map { $0 + p.index + 1 }), to: to + p.index + 1) }
+                .onDelete { s in s.map { $0 + p.index + 1 }.sorted(by: >).forEach { p.remove(at: $0) } }
+            }
+        }
+        .listStyle(.sidebar).scrollContentBackground(.hidden).background(.black)
+        .overlay { if p.current == nil { ContentUnavailableView("Queue is empty", systemImage: "list.bullet") } }
+    }
+}
+
+struct QueueRow: View {
+    let t: Track; var now = false
+    var body: some View {
+        HStack {
+            Art(url: t.art, size: 34)
+            VStack(alignment: .leading) {
+                Text(t.title).foregroundStyle(now ? .green : .white).lineLimit(1)
+                Text(t.artist).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+            }
+        }
     }
 }
 
@@ -311,20 +389,33 @@ struct FullPlayer: View {
     @Environment(Player.self) var p
     @Environment(\.dismiss) var dismiss
     var body: some View {
-        VStack(spacing: 24) {
-            HStack { Spacer(); Button { dismiss() } label: { Image(systemName: "chevron.down") }.buttonStyle(.plain) }
-            Spacer()
-            Art(url: p.current?.art, size: 320)
-            if let t = p.current { TrackLinks(t: t, titleFont: .title2.bold()) }
-            let d = max(p.duration ?? 1, 1)
-            Slider(value: Binding(get: { min(p.progress, d) }, set: { p.seek($0) }), in: 0...d)
-            HStack(spacing: 48) {
-                Button { p.prev() } label: { Image(systemName: "backward.fill") }
-                Button { p.toggle() } label: { Image(systemName: p.playing ? "pause.circle.fill" : "play.circle.fill").font(.system(size: 64)) }
-                Button { p.next() } label: { Image(systemName: "forward.fill") }
-            }.font(.title).buttonStyle(.plain).foregroundStyle(.white)
-            Spacer()
-        }.padding(32).frame(minWidth: 420, minHeight: 600).frame(maxWidth: .infinity).background(Color.black.ignoresSafeArea()).presentationBackground(.black)
+        HStack(spacing: 0) {
+            VStack(spacing: 22) {
+                HStack { Spacer(); Button { dismiss() } label: { Image(systemName: "chevron.down") }.buttonStyle(.plain) }
+                Spacer()
+                Art(url: p.current?.art, size: 340).shadow(color: .black, radius: 30)
+                if let t = p.current { TrackLinks(t: t, titleFont: .title2.bold()) }
+                SeekBar()
+                HStack(spacing: 36) {
+                    Button { p.prev() } label: { Image(systemName: "backward.fill") }
+                    Button { p.toggle() } label: {
+                        if p.loading { ProgressView().frame(width: 64, height: 64) }
+                        else { Image(systemName: p.playing ? "pause.circle.fill" : "play.circle.fill").font(.system(size: 64)) }
+                    }
+                    Button { p.next() } label: { Image(systemName: "forward.fill") }
+                }.font(.title)
+                HStack(spacing: 28) { ModeButtons() }.font(.title3)
+                if let e = p.error { Text(e).font(.caption).foregroundStyle(e.hasPrefix("via") ? Color.secondary : Color.red) }
+                Spacer()
+            }
+            .padding(32).frame(minWidth: 440, maxWidth: .infinity)
+            #if os(macOS)
+            Divider()
+            QueueView().frame(width: 320)
+            #endif
+        }
+        .buttonStyle(.plain).foregroundStyle(.white)
+        .frame(minWidth: 780, minHeight: 640).background(Color.black.ignoresSafeArea()).presentationBackground(.black)
     }
 }
 
@@ -389,5 +480,6 @@ struct TrackMenu: View {
         if let a = t.artistLink { Button("Go to Artist") { router.open(a) } }
         if let a = t.albumLink { Button("Go to Album") { router.open(a) } }
         Button("Play Next") { player.playNext(t) }
+        Button("Add to Queue") { player.addToQueue(t) }
     }
 }
