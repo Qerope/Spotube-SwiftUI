@@ -157,7 +157,7 @@ struct Loader: View {
                 else if let err { ContentUnavailableView { Label("Couldn't load", systemImage: "exclamationmark.triangle") } description: { Text(err).textSelection(.enabled) } actions: { Button("Retry") { Task { await load() } } } }
                 else if tracks.isEmpty { ContentUnavailableView("Nothing here", systemImage: "music.note") }
             }
-            .task(id: pm.metadata?.id) { await load() }
+            .task(id: "\(pm.metadata?.id ?? "")|\(fn)|\(args.map { "\($0)" }.joined())") { await load() }
     }
     func load() async {
         loading = true; defer { loading = false }
@@ -179,6 +179,7 @@ struct CollectionView: View { let c: Collection; var body: some View { Loader(ti
 
 struct SearchView: View {
     @Environment(PluginManager.self) var pm
+    @Environment(Router.self) var router
     @State var q = ""
     @State var tracks: [Track] = []
     @State var artists: [Collection] = []
@@ -191,13 +192,13 @@ struct SearchView: View {
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: 16) {
                             ForEach(artists) { a in
-                                NavigationLink(value: a) {
+                                Button { router.open(a) } label: {
                                     VStack {
                                         AsyncImage(url: a.art.flatMap(URL.init)) { $0.resizable().scaledToFill() } placeholder: { Color(white: 0.08) }
                                             .frame(width: 96, height: 96).clipShape(Circle())
                                         Text(a.title).font(.caption).lineLimit(1).frame(width: 100)
-                                    }
-                                }.buttonStyle(.plain)
+                                    }.contentShape(Rectangle())
+                                }.buttonStyle(.borderless).foregroundStyle(.white)
                             }
                         }
                     }
@@ -337,6 +338,7 @@ struct ArtistPage: Codable { var name: String; var art: String?; var tracks: [Tr
 struct ArtistView: View {
     let c: Collection
     @Environment(PluginManager.self) var pm
+    @Environment(Router.self) var router
     @State var page: ArtistPage?
     @State var err: String?
     var body: some View {
@@ -354,14 +356,14 @@ struct ArtistView: View {
                     Text("Discography").font(.headline)
                     LazyVGrid(columns: [GridItem(.adaptive(minimum: 140), spacing: 16)], alignment: .leading, spacing: 16) {
                         ForEach(page.albums) { a in
-                            NavigationLink(value: a) {
+                            Button { router.open(a) } label: {
                                 VStack(alignment: .leading, spacing: 4) {
                                     AsyncImage(url: a.art.flatMap(URL.init)) { $0.resizable().scaledToFill() } placeholder: { Color(white: 0.08) }
                                         .frame(width: 140, height: 140).clipShape(RoundedRectangle(cornerRadius: 8))
                                     Text(a.title).font(.callout).lineLimit(1)
                                     Text(a.subtitle ?? "").font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                                }.frame(width: 140)
-                            }.buttonStyle(.plain)
+                                }.frame(width: 140).contentShape(Rectangle())
+                            }.buttonStyle(.borderless).foregroundStyle(.white)
                         }
                     }
                 }
