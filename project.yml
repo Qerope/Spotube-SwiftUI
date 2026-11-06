@@ -1,0 +1,14 @@
+name: SpotubeLite
+options: { bundleIdPrefix: dev.qerope, deploymentTarget: { iOS: "17.0" } }
+targets:
+  SpotubeLite:
+    type: application
+    platform: iOS
+    sources: [Sources, { path: Plugins, buildPhase: resources }]
+    info:
+      path: Sources/Info.plist
+      properties:
+        UIBackgroundModes: [audio]
+        UILaunchScreen: { UIColorName: "" }
+        CFBundleDisplayName: Spotube Lite
+    settings: { SWIFT_VERSION: "5.0", GENERATE_INFOPLIST_FILE: YES, CODE_SIGN_STYLE: Automatic }
