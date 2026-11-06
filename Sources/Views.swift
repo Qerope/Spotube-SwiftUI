@@ -77,11 +77,17 @@ struct Art: View {
     }
 }
 
-struct TrackList: View {
+struct TrackList<Header: View>: View {
     @Environment(Player.self) var player
     let tracks: [Track]
+    @ViewBuilder var header: () -> Header
     var body: some View {
-        List(Array(tracks.enumerated()), id: \.offset) { i, t in
+        List {
+            header().listRowBackground(Color.black)
+            ForEach(Array(tracks.enumerated()), id: \.offset) { i, t in row(i, t) }
+        }.listStyle(.plain).scrollContentBackground(.hidden).background(.black)
+    }
+    func row(_ i: Int, _ t: Track) -> some View {
             Button { player.play(tracks, at: i) } label: {
                 HStack {
                     Art(url: t.art, size: 40)
@@ -94,26 +100,34 @@ struct TrackList: View {
                     if let d = t.duration, d > 0 { Text(d.mmss).font(.caption.monospacedDigit()).foregroundStyle(.secondary) }
                 }.contentShape(Rectangle())
             }.buttonStyle(.plain).listRowBackground(Color.black)
-        }.listStyle(.plain).scrollContentBackground(.hidden).background(.black)
     }
 }
+extension TrackList where Header == EmptyView {
+    init(tracks: [Track]) { self.init(tracks: tracks) { EmptyView() } }
+}
+
+struct SearchResult: Codable { var artists: [Collection]; var tracks: [Track] }
 
 struct Loader: View {
     let title: String; let fn: String; var args: [Any] = []
     @Environment(PluginManager.self) var pm
     @State var tracks: [Track] = []
     @State var err: String?
+    @State var loading = true
     var body: some View {
         TrackList(tracks: tracks).navigationTitle(title)
             .overlay {
-                if let err { ContentUnavailableView("Error", systemImage: "exclamationmark.triangle", description: Text(err)) }
-                else if tracks.isEmpty { ProgressView() }
+                if loading { ProgressView() }
+                else if let err { ContentUnavailableView { Label("Couldn't load", systemImage: "exclamationmark.triangle") } description: { Text(err).textSelection(.enabled) } actions: { Button("Retry") { Task { await load() } } } }
+                else if tracks.isEmpty { ContentUnavailableView("Nothing here", systemImage: "music.note") }
             }
-            .task(id: pm.metadata?.id) {
-                guard let m = pm.metadata else { err = "Install a metadata plugin"; return }
-                guard m.has(fn) else { err = "\(m.name) has no \(fn)()"; return }
-                do { tracks = try await m.call(fn, args); err = tracks.isEmpty ? "Nothing here" : nil } catch { err = error.localizedDescription }
-            }
+            .task(id: pm.metadata?.id) { await load() }
+    }
+    func load() async {
+        loading = true; defer { loading = false }
+        guard let m = pm.metadata else { err = "Install a metadata plugin"; return }
+        guard m.has(fn) else { err = "\(m.name) has no \(fn)()"; return }
+        do { tracks = try await m.call(fn, args); err = nil } catch { err = error.localizedDescription }
     }
 }
 
@@ -124,14 +138,42 @@ struct SearchView: View {
     @Environment(PluginManager.self) var pm
     @State var q = ""
     @State var tracks: [Track] = []
+    @State var artists: [Collection] = []
     @State var err: String?
     var body: some View {
-        TrackList(tracks: tracks).navigationTitle("Search")
-            .searchable(text: $q, placement: .toolbar).onSubmit(of: .search) {
-                Task {
-                    do { tracks = try await pm.metadata?.call("search", [q]) ?? []; err = nil } catch { err = error.localizedDescription }
-                }
+        TrackList(tracks: tracks) {
+            if !artists.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Artists").font(.headline)
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 16) {
+                            ForEach(artists) { a in
+                                NavigationLink(value: a) {
+                                    VStack {
+                                        AsyncImage(url: a.art.flatMap(URL.init)) { $0.resizable().scaledToFill() } placeholder: { Color(white: 0.08) }
+                                            .frame(width: 96, height: 96).clipShape(Circle())
+                                        Text(a.title).font(.caption).lineLimit(1).frame(width: 100)
+                                    }
+                                }.buttonStyle(.plain)
+                            }
+                        }
+                    }
+                    if !tracks.isEmpty { Text("Songs").font(.headline).padding(.top, 8) }
+                }.padding(.vertical, 8)
             }
+        }
+        .navigationTitle("Search")
+        .navigationDestination(for: Collection.self) { CollectionView(c: $0) }
+        .searchable(text: $q, placement: .toolbar).onSubmit(of: .search) {
+            Task {
+                guard let m = pm.metadata else { return }
+                do {
+                    if m.has("searchAll") { let r: SearchResult = try await m.call("searchAll", [q]); artists = r.artists; tracks = r.tracks }
+                    else { artists = []; tracks = try await m.call("search", [q]) }
+                    err = nil
+                } catch { err = error.localizedDescription }
+            }
+        }
             .overlay { if let err { Text(err).foregroundStyle(.red).padding() } }
     }
 }

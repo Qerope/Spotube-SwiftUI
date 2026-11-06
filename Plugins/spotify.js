@@ -4,6 +4,8 @@ const UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (
 const GQL = "https://api-partner.spotify.com/pathfinder/v2/query";
 const NUANCES = "https://gist.githubusercontent.com/raw/22ed9c6ba463899e933427f7de1f0eef/nuances.json";
 const Q = {
+  searchDesktop: "d9f785900f0710b31c07818d617f4f7600c1e21217e80f5b043d1e78d74e6026",
+  queryArtistOverview: "7f86ff63e38c24973a2842b672abe44c910c1973978dc8a4a0cb648edef34527",
   searchTracks: "bc1ca2fcd0ba1013a0fc88e6cc4f190af501851e3dafd3e1ef85840297694428",
   libraryV3: "390c78e5b951029bad359785e69b07b536a509c581cbcd0aded5e5067f187455",
   fetchLibraryTracks: "087278b20b743578a6262c2b0b4bcd20d879c503cc359a2285baf083ef944240",
@@ -49,8 +51,12 @@ async function gql(op, variables) {
       "app-platform": "WebPlayer", "User-Agent": UA, Cookie: "sp_dc=" + localStorage.getItem("sp_dc") },
     body: JSON.stringify({ variables, operationName: op, extensions: { persistedQuery: { version: 1, sha256Hash: Q[op] } } }),
   });
-  if (!r.ok) throw new Error(`Spotify ${op} failed: ${r.status}`);
-  return r.json();
+  const body = await r.text();
+  if (r.status === 401) localStorage.removeItem("tok");
+  if (!r.ok) throw new Error(`Spotify ${op}: HTTP ${r.status} ${body.slice(0, 120)}`);
+  const j = JSON.parse(body);
+  if (j.errors && j.errors.length && !j.data) throw new Error(`Spotify ${op}: ${j.errors.map(e => e.message).join("; ")}`);
+  return j;
 }
 // Collect every object whose uri starts with `pre` (robust to GraphQL wrapper shapes).
 function walk(x, pre, out = [], seen = new Set()) {
@@ -91,7 +97,29 @@ const plugin = {
     const r = await gql("searchTracks", { searchTerm: q, offset: 0, limit: 50, numberOfTopResults: 20, includeAudiobooks: false, includePreReleases: false, includeAuthors: false });
     return walk(r, "spotify:track:").map(d => track(d));
   },
-  async home() { return (await paged("fetchLibraryTracks", {}, 50, null, 100)); },
+  // Home: Liked Songs; if Spotify rejects that query, fall back to your first playlist.
+  // Artists first, then songs.
+  async searchAll(q) {
+    try {
+      const r = await gql("searchDesktop", { searchTerm: q, offset: 0, limit: 10, numberOfTopResults: 5, includeAudiobooks: false,
+        includeArtistHasConcertsField: false, includePreReleases: true, includeLocalConcertsField: false, includeAuthors: false });
+      const sv = r.data?.searchV2 || {};
+      const artists = (sv.artists?.items || []).map(i => i.data).filter(a => a?.uri?.startsWith("spotify:artist:"))
+        .map(a => ({ id: a.uri, title: a.profile?.name || "", subtitle: "Artist", art: (a.visuals?.avatarImage?.sources || []).sort((x, y) => (y.width || 0) - (x.width || 0))[0]?.url }));
+      const tracks = walk(sv.tracksV2 || {}, "spotify:track:").map(d => track(d));
+      return { artists, tracks: tracks.length ? tracks : await this.search(q) };
+    } catch (e) {
+      return { artists: [], tracks: await this.search(q) };
+    }
+  },
+  async home() {
+    const errs = [];
+    try { const t = await paged("fetchLibraryTracks", {}, 50, null, 100); if (t.length) return t; } catch (e) { errs.push(String(e.message || e)); }
+    for (const p of (await this.library()).slice(1, 4)) {
+      try { const t = await this.collection(p.id); if (t.length) return t; } catch (e) { errs.push(String(e.message || e)); }
+    }
+    throw new Error(errs.join(" | ") || "Your library is empty");
+  },
   async library() {
     const r = await gql("libraryV3", { filters: ["Playlists"], order: null, textFilter: "", features: [], limit: 50, offset: 0, flatten: true, expandedFolders: [], folderUri: null, includeFoldersWhenFlattening: true });
     return [{ id: "liked", title: "Liked Songs" },
@@ -99,6 +127,10 @@ const plugin = {
   },
   async collection(id) {
     if (id === "liked") return paged("fetchLibraryTracks", {}, 50);
+    if (id.startsWith("spotify:artist:")) {
+      const r = await gql("queryArtistOverview", { uri: id, locale: "", preReleaseV2: false });
+      return walk(r.data?.artistUnion?.discography?.topTracks || {}, "spotify:track:").map(d => track(d));
+    }
     if (id.startsWith("spotify:album:")) return paged("getAlbum", { uri: id, locale: "" }, 50, null, 500);
     return paged("fetchPlaylist", { uri: id, enableWatchFeedEntrypoint: false }, 100);
   },
