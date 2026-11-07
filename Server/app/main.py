@@ -1,4 +1,4 @@
-"""Spotube Lite server: device sync, listening history/stats and a yt-dlp audio cache.
+"""Lyd server: device sync, listening history/stats and a yt-dlp audio cache.
 
 Everything lives in one SQLite database (DATA_DIR/db/spotube.db) so it can be mined later:
   devices      every device that ever connected + its latest player state (handoff)
@@ -196,7 +196,7 @@ async def lifespan(_):
     t.cancel()
 
 
-app = FastAPI(title="Spotube Lite server", version=VERSION, lifespan=lifespan)
+app = FastAPI(title="Lyd server", version=VERSION, lifespan=lifespan)
 
 
 @app.get("/health")

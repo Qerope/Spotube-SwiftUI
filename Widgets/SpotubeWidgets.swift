@@ -145,7 +145,7 @@ struct NowPlayingWidget: Widget {
             NowPlayingWidgetView(e: e).containerBackground(for: .widget) { WidgetBackground(art: e.art) }
         }
         .configurationDisplayName("Now Playing")
-        .description("What's playing in Spotube Lite, with controls.")
+        .description("What's playing in Lyd, with controls.")
         .supportedFamilies([.systemSmall, .systemMedium, .accessoryRectangular, .accessoryCircular, .accessoryInline])
     }
 }
@@ -174,7 +174,7 @@ struct NowPlayingWidgetView: View {
         Group {
             switch family {
             case .accessoryInline:
-                Label(s.map { "\($0.title) · \($0.artist)" } ?? "Spotube Lite", systemImage: s?.playing == true ? "waveform" : "music.note")
+                Label(s.map { "\($0.title) · \($0.artist)" } ?? "Lyd", systemImage: s?.playing == true ? "waveform" : "music.note")
             case .accessoryCircular:
                 ZStack {
                     AccessoryWidgetBackground()
@@ -182,7 +182,7 @@ struct NowPlayingWidgetView: View {
                 }
             case .accessoryRectangular:
                 VStack(alignment: .leading, spacing: 1) {
-                    Label(s?.playing == true ? "Now Playing" : "Spotube Lite", systemImage: s?.playing == true ? "waveform" : "music.note")
+                    Label(s?.playing == true ? "Now Playing" : "Lyd", systemImage: s?.playing == true ? "waveform" : "music.note")
                         .font(.caption2.weight(.semibold)).widgetAccentable()
                     Text(s?.title ?? "Nothing playing").font(.headline).lineLimit(1)
                     Text(s?.artist ?? "Open the app to play music").font(.caption).foregroundStyle(.secondary).lineLimit(1)
@@ -193,7 +193,7 @@ struct NowPlayingWidgetView: View {
                     VStack(alignment: .leading, spacing: 4) {
                         Text(s?.playing == true ? "NOW PLAYING" : "LAST PLAYED").font(.caption2.weight(.bold)).foregroundStyle(red)
                         Text(s?.title ?? "Nothing playing").font(.headline).lineLimit(2)
-                        Text(s?.artist ?? "Open Spotube Lite").font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+                        Text(s?.artist ?? "Open Lyd").font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
                         Spacer(minLength: 0)
                         if s != nil { Controls(playing: s?.playing == true).font(.title3) }
                     }
@@ -212,7 +212,7 @@ struct NowPlayingWidgetView: View {
                     }
                     Spacer(minLength: 0)
                     Text(s?.title ?? "Nothing playing").font(.subheadline.weight(.semibold)).lineLimit(2)
-                    Text(s?.artist ?? "Open Spotube Lite").font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    Text(s?.artist ?? "Open Lyd").font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 }
             }
         }

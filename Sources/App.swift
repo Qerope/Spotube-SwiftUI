@@ -134,7 +134,7 @@ struct MenuBarPlayer: View {
             }.buttonStyle(.plain).font(.title3)
             Divider()
             HStack {
-                Button("Open Spotube Lite") { openWindow(id: "main"); NSApp.activate(ignoringOtherApps: true) }
+                Button("Open Lyd") { openWindow(id: "main"); NSApp.activate(ignoringOtherApps: true) }
                 Spacer()
                 Button("Quit") { NSApp.terminate(nil) }
             }.buttonStyle(.borderless).font(.caption)

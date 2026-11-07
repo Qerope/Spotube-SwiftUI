@@ -20,10 +20,10 @@ notes = Path(notes_file).read_text().strip() if os.path.exists(notes_file) else 
 src_path = DIR / "source.json"
 src = json.loads(src_path.read_text()) if src_path.exists() else {}
 src.update({
-    "name": "Spotube Lite",
+    "name": "Lyd",
     "identifier": "me.qerope.spotube.source",
     "subtitle": "Your music, everywhere.",
-    "description": "Spotube Lite builds, straight from the release script.",
+    "description": "Lyd builds, straight from the release script.",
     "iconURL": BASE + "icon.png",
     "website": "https://github.com/Qerope/Spotube-SwiftUI",
     "tintColor": "#FA2D48",
@@ -31,7 +31,7 @@ src.update({
 apps = src.get("apps") or [{}]
 app = apps[0]
 app.update({
-    "name": "Spotube Lite",
+    "name": "Lyd",
     "bundleIdentifier": "dev.qerope.SpotubeLite",
     "developerName": "Qerope",
     "subtitle": "Spotify catalog, YouTube audio, synced everywhere.",
@@ -49,7 +49,7 @@ versions.insert(0, {
     "version": version,
     "buildVersion": str(build),
     "date": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-    "localizedDescription": notes or f"Spotube Lite {version}",
+    "localizedDescription": notes or f"Lyd {version}",
     "downloadURL": BASE + ipa,
     "size": (DIR / ipa).stat().st_size,
     "minOSVersion": "26.0",

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Pulls the repo, downloads the latest (or given) GitHub release of Spotube Lite — both the macOS
+# Pulls the repo, downloads the latest (or given) GitHub release of Lyd — both the macOS
 # .zip and the iOS .ipa — installs the Mac app into /Applications with quarantine removed, and
 # leaves the .ipa in IPA_DIR (default ~/Downloads) for sideloading.
 #
@@ -13,7 +13,7 @@
 set -euo pipefail
 
 REPO="Qerope/Spotube-SwiftUI"
-APP_NAME="SpotubeLite"
+APP_NAME="Lyd"
 APP_DIR="${APP_DIR:-/Applications}"
 IPA_DIR="${IPA_DIR:-$HOME/Downloads}"
 
@@ -98,7 +98,7 @@ $SUDO ditto "$NEW_APP" "$TARGET"
 $SUDO xattr -dr com.apple.quarantine "$TARGET" 2>/dev/null || true
 spctl --assess --type execute "$TARGET" 2>/dev/null && echo "Gatekeeper: accepted (notarized)." \
   || warn "Not notarized; removed the quarantine flag so it opens on this Mac anyway."
-echo "Installed Spotube Lite $VERSION${INSTALLED:+ (was $INSTALLED)}."
+echo "Installed Lyd $VERSION${INSTALLED:+ (was $INSTALLED)}."
 
 [[ "$LAUNCH" == true ]] && open "$TARGET"
 exit 0

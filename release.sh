@@ -15,7 +15,7 @@ set -euo pipefail
 
 REPO="Qerope/Spotube-SwiftUI"
 SCHEME="SpotubeLite"
-APP_NAME="SpotubeLite"
+APP_NAME="Lyd"; PROJECT="SpotubeLite"
 NOTARY_PROFILE="${NOTARY_PROFILE:-SpotubeLite-notary}"
 SERVER="${SERVER:-ubuntu@204.216.106.35}"      # hosts the AltStore source (see Server/altstore.py)
 
@@ -68,7 +68,7 @@ echo '{}' > Config/server.json
 xcodegen -q
 build() { # $1 = destination, $2 = log name, rest = extra settings
   local dest="$1" log="$BUILD_DIR/$2.log"; shift 2
-  if ! xcodebuild -project "$APP_NAME.xcodeproj" -scheme "$SCHEME" -configuration Release \
+  if ! xcodebuild -project "$PROJECT.xcodeproj" -scheme "$SCHEME" -configuration Release \
       -destination "$dest" -derivedDataPath "$DERIVED" \
       MARKETING_VERSION="$VERSION" CURRENT_PROJECT_VERSION="$BUILD_NUMBER" "$@" build > "$log" 2>&1; then
     grep -E 'error:' "$log" | sort -u | head -20 || tail -30 "$log"
@@ -126,7 +126,7 @@ git push -u origin "$(git rev-parse --abbrev-ref HEAD)"
 git push origin "$TAG"
 
 step "Creating GitHub release $TAG"
-gh release create "$TAG" "$ZIP" "$IPA" --repo "$REPO" --title "Spotube Lite $TAG" --generate-notes
+gh release create "$TAG" "$ZIP" "$IPA" --repo "$REPO" --title "Lyd $TAG" --generate-notes
 
 # --- AltStore -----------------------------------------------------------------------------
 if [[ -z "${NO_ALTSTORE:-}" ]]; then

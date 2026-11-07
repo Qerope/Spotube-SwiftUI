@@ -1,4 +1,4 @@
-# Spotube Lite (SwiftUI)
+# Lyd (SwiftUI)
 Minimal native **macOS** (and iOS) client inspired by [Spotube](https://github.com/KRTirtho/spotube): pure-black OLED UI,
 JavaScript plugins (JavaScriptCore), Spotify metadata + YouTube audio, just like Spotube 6's default setup.
 
