@@ -1,45 +1,61 @@
-import AppKit
-func render(_ px: Int, mac: Bool) -> Data {
-    let s = CGFloat(px), cs = CGColorSpace(name: CGColorSpace.sRGB)!
-    let c = CGContext(data: nil, width: px, height: px, bitsPerComponent: 8, bytesPerRow: 0, space: cs, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
-    c.scaleBy(x: s / 1024, y: s / 1024)
-    // macOS grid: 824pt tile with shadow; iOS: full-bleed (system masks it)
-    let tile = mac ? CGRect(x: 100, y: 100, width: 824, height: 824) : CGRect(x: 0, y: 0, width: 1024, height: 1024)
-    let path = CGPath(roundedRect: tile, cornerWidth: mac ? 185 : 0, cornerHeight: mac ? 185 : 0, transform: nil)
-    if mac { c.saveGState(); c.setShadow(offset: CGSize(width: 0, height: -10), blur: 28, color: CGColor(gray: 0, alpha: 0.45)); c.addPath(path); c.setFillColor(.black); c.fillPath(); c.restoreGState() }
-    c.saveGState(); c.addPath(path); c.clip()
-    c.drawLinearGradient(CGGradient(colorsSpace: cs, colors: [CGColor(gray: 0.11, alpha: 1), CGColor(gray: 0.0, alpha: 1)] as CFArray, locations: [0, 1])!,
-                         start: CGPoint(x: 512, y: tile.maxY), end: CGPoint(x: 512, y: tile.minY), options: [])
-    // hairline inner border
-    c.addPath(CGPath(roundedRect: tile.insetBy(dx: 2, dy: 2), cornerWidth: mac ? 183 : 0, cornerHeight: mac ? 183 : 0, transform: nil))
-    c.setStrokeColor(CGColor(gray: 1, alpha: 0.08)); c.setLineWidth(4); c.strokePath()
-    let mint1 = CGColor(srgbRed: 0.36, green: 0.98, blue: 0.70, alpha: 1), mint2 = CGColor(srgbRed: 0.10, green: 0.78, blue: 0.52, alpha: 1)
-    let cx: CGFloat = 395, cy: CGFloat = 512
-    // rounded play triangle
-    let tri = CGMutablePath(), r: CGFloat = 34
-    let p = [CGPoint(x: cx - 120, y: cy + 165), CGPoint(x: cx + 165, y: cy), CGPoint(x: cx - 120, y: cy - 165)]
-    tri.move(to: CGPoint(x: (p[0].x + p[2].x) / 2, y: (p[0].y + p[2].y) / 2))
-    for i in 0..<3 { tri.addArc(tangent1End: p[i], tangent2End: p[(i + 1) % 3], radius: r) }
-    tri.closeSubpath()
-    c.saveGState(); c.addPath(tri); c.clip()
-    c.drawLinearGradient(CGGradient(colorsSpace: cs, colors: [mint1, mint2] as CFArray, locations: [0, 1])!, start: CGPoint(x: cx, y: cy + 170), end: CGPoint(x: cx, y: cy - 170), options: [])
-    c.restoreGState()
-    // two broadcast arcs
-    c.setLineCap(.round)
-    for (i, rad) in [CGFloat(250), 330].enumerated() {
-        c.addArc(center: CGPoint(x: cx + 10, y: cy), radius: rad, startAngle: -.pi / 5.2, endAngle: .pi / 5.2, clockwise: false)
-        c.setStrokeColor(i == 0 ? mint1.copy(alpha: 0.85)! : mint1.copy(alpha: 0.4)!); c.setLineWidth(36); c.strokePath()
+// Regenerate the app icons: swift scripts/make-icon.swift Sources/Assets.xcassets/AppIcon.appiconset
+import CoreGraphics
+import Foundation
+import ImageIO
+import UniformTypeIdentifiers
+
+// Spotube Lite icon: white play + sound waves on Apple Music red. Drawn in a 1024 space.
+func draw(_ ctx: CGContext, mac: Bool) {
+    let cs = CGColorSpaceCreateDeviceRGB()
+    ctx.translateBy(x: 0, y: 1024); ctx.scaleBy(x: 1, y: -1)  // top-left origin
+    var body = CGRect(x: 0, y: 0, width: 1024, height: 1024)
+    if mac {
+        body = CGRect(x: 100, y: 100, width: 824, height: 824)
+        let path = CGPath(roundedRect: body, cornerWidth: 185, cornerHeight: 185, transform: nil)
+        ctx.saveGState()
+        ctx.setShadow(offset: CGSize(width: 0, height: 12), blur: 28, color: CGColor(gray: 0, alpha: 0.35))
+        ctx.addPath(path); ctx.setFillColor(CGColor(red: 0.9, green: 0.15, blue: 0.25, alpha: 1)); ctx.fillPath()
+        ctx.restoreGState()
+        ctx.addPath(path); ctx.clip()
     }
-    c.restoreGState()
-    return NSBitmapImageRep(cgImage: c.makeImage()!).representation(using: .png, properties: [:])!
+    let grad = CGGradient(colorsSpace: cs, colors: [CGColor(red: 1, green: 0.36, blue: 0.45, alpha: 1), CGColor(red: 0.98, green: 0.176, blue: 0.282, alpha: 1),
+                                                     CGColor(red: 0.84, green: 0.09, blue: 0.2, alpha: 1)] as CFArray, locations: [0, 0.5, 1])!
+    ctx.drawLinearGradient(grad, start: CGPoint(x: 512, y: body.minY), end: CGPoint(x: 512, y: body.maxY), options: [])
+    // Content scaled into the body.
+    let s = body.width / 1024
+    ctx.translateBy(x: body.minX, y: body.minY); ctx.scaleBy(x: s, y: s)
+    ctx.saveGState()
+    ctx.setShadow(offset: CGSize(width: 0, height: 10), blur: 30, color: CGColor(red: 0.45, green: 0, blue: 0.08, alpha: 0.35))
+    ctx.beginTransparencyLayer(auxiliaryInfo: nil)
+    // Rounded play triangle (fill + round-joined stroke).
+    let tri = CGMutablePath()
+    tri.move(to: CGPoint(x: 305, y: 402)); tri.addLine(to: CGPoint(x: 305, y: 620)); tri.addLine(to: CGPoint(x: 497, y: 511)); tri.closeSubpath()
+    ctx.setFillColor(.white); ctx.setStrokeColor(.white); ctx.setLineWidth(60); ctx.setLineJoin(.round)
+    ctx.addPath(tri); ctx.drawPath(using: .fillStroke)
+    ctx.setLineCap(.round); ctx.setLineWidth(36)
+    func arc(_ cx: CGFloat, _ r: CGFloat, _ deg: CGFloat, _ alpha: CGFloat) {
+        let a = deg * .pi / 180
+        ctx.setStrokeColor(CGColor(gray: 1, alpha: alpha))
+        ctx.addArc(center: CGPoint(x: cx, y: 511), radius: r, startAngle: -a, endAngle: a, clockwise: false); ctx.strokePath()
+    }
+    arc(476, 196, 46.9, 0.95)
+    arc(403, 332, 34.7, 0.55)
+    ctx.endTransparencyLayer()
+    ctx.restoreGState()
 }
-let out = CommandLine.arguments[1]
-var images: [[String: String]] = []
-for (pt, sc) in [(16,1),(16,2),(32,1),(32,2),(128,1),(128,2),(256,1),(256,2),(512,1),(512,2)] {
-    let f = "mac\(pt)@\(sc)x.png"; try! render(pt * sc, mac: true).write(to: URL(fileURLWithPath: "\(out)/\(f)"))
-    images.append(["idiom": "mac", "size": "\(pt)x\(pt)", "scale": "\(sc)x", "filename": f])
+
+func write(_ name: String, _ px: Int, mac: Bool) {
+    let ctx = CGContext(data: nil, width: px, height: px, bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+                        bitmapInfo: (mac ? CGImageAlphaInfo.premultipliedLast : CGImageAlphaInfo.noneSkipLast).rawValue)!
+    ctx.interpolationQuality = .high
+    ctx.scaleBy(x: CGFloat(px) / 1024, y: CGFloat(px) / 1024)
+    draw(ctx, mac: mac)
+    let url = URL(fileURLWithPath: CommandLine.arguments[1] + "/" + name)
+    let d = CGImageDestinationCreateWithURL(url as CFURL, UTType.png.identifier as CFString, 1, nil)!
+    CGImageDestinationAddImage(d, ctx.makeImage()!, nil); CGImageDestinationFinalize(d)
 }
-try! render(1024, mac: false).write(to: URL(fileURLWithPath: "\(out)/ios1024.png"))
-images.append(["idiom": "universal", "platform": "ios", "size": "1024x1024", "filename": "ios1024.png"])
-let json: [String: Any] = ["images": images, "info": ["author": "xcode", "version": 1]]
-try! JSONSerialization.data(withJSONObject: json, options: .prettyPrinted).write(to: URL(fileURLWithPath: "\(out)/Contents.json"))
+
+write("ios1024.png", 1024, mac: false)
+for (n, px) in [(16, 16), (16, 32), (32, 32), (32, 64), (128, 128), (128, 256), (256, 256), (256, 512), (512, 512), (512, 1024)] {
+    write("mac\(n)@\(px / n)x.png", px, mac: true)
+}
