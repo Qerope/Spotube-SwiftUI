@@ -14,6 +14,7 @@ set -euo pipefail
 
 REPO="Qerope/Spotube-SwiftUI"
 APP_NAME="Lyd"
+OLD_APP_NAME="SpotubeLite"   # pre-rename name; removed on install so there is only one app
 APP_DIR="${APP_DIR:-/Applications}"
 IPA_DIR="${IPA_DIR:-$HOME/Downloads}"
 
@@ -62,7 +63,7 @@ if [[ -d "$TARGET" ]]; then
   echo "Installed: ${INSTALLED:-unknown version}"
 else echo "Installed: none"; fi
 UP_TO_DATE=false
-[[ "$INSTALLED" == "$VERSION" && "$FORCE" == false ]] && UP_TO_DATE=true
+[[ "$INSTALLED" == "$VERSION" && "$FORCE" == false && ! -d "$APP_DIR/$OLD_APP_NAME.app" ]] && UP_TO_DATE=true
 
 # --- Download both -----------------------------------------------------------------------
 WORK=$(mktemp -d); trap 'rm -rf "$WORK"' EXIT
@@ -88,6 +89,17 @@ if pgrep -xq "$APP_NAME"; then
   osascript -e "tell application id \"$BUNDLE_ID\" to quit" >/dev/null 2>&1 || true
   for _ in {1..20}; do pgrep -xq "$APP_NAME" || break; sleep 0.25; done
   pgrep -xq "$APP_NAME" && { pkill -x "$APP_NAME" || true; sleep 1; }
+fi
+
+OLD_TARGET="$APP_DIR/$OLD_APP_NAME.app"
+if [[ -d "$OLD_TARGET" ]]; then
+  step "Removing the old $OLD_APP_NAME.app"
+  if pgrep -xq "$OLD_APP_NAME"; then
+    osascript -e "tell application id \"$BUNDLE_ID\" to quit" >/dev/null 2>&1 || true
+    for _ in {1..20}; do pgrep -xq "$OLD_APP_NAME" || break; sleep 0.25; done
+    pkill -x "$OLD_APP_NAME" 2>/dev/null || true
+  fi
+  if [[ -w "$APP_DIR" ]]; then rm -rf "$OLD_TARGET"; else sudo rm -rf "$OLD_TARGET"; fi
 fi
 
 step "Installing into $APP_DIR"
