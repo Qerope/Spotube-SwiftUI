@@ -6,8 +6,8 @@ services:
     env_file: .env            # SPOTUBE_TOKEN=..., created by deploy.sh, never committed
     environment:
       DATA_DIR: /data
-      CACHE_LIMIT_GB: "10"
-      MIN_FREE_GB: "1.5"
+      CACHE_LIMIT_GB: "0"        # 0 = no cap: fill the disk, keeping MIN_FREE_GB free
+      MIN_FREE_GB: "2"
       ACCEL_PREFIX: /spotube-cache/
     volumes:
       - ./data:/data

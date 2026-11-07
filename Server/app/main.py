@@ -36,8 +36,8 @@ DATA = Path(os.environ.get("DATA_DIR", "/data"))
 CACHE = DATA / "cache"
 DBDIR = DATA / "db"
 TOKEN = os.environ.get("SPOTUBE_TOKEN", "")
-CACHE_LIMIT = int(float(os.environ.get("CACHE_LIMIT_GB", "10")) * 1e9)
-MIN_FREE = int(float(os.environ.get("MIN_FREE_GB", "1.5")) * 1e9)
+CACHE_LIMIT = int(float(os.environ.get("CACHE_LIMIT_GB", "0")) * 1e9)
+MIN_FREE = int(float(os.environ.get("MIN_FREE_GB", "2")) * 1e9)
 ACCEL = os.environ.get("ACCEL_PREFIX")  # nginx internal location serving CACHE, e.g. /spotube-cache/
 YTDLP = os.environ.get("YTDLP", "yt-dlp")
 PROXY = os.environ.get("YTDLP_PROXY", "")  # e.g. socks5://127.0.0.1:40000 (Cloudflare WARP) if YouTube blocks the server IP
@@ -465,14 +465,18 @@ inflight: dict[str, asyncio.Task] = {}
 
 def cache_info():
     r = db.one("SELECT count(*) n, coalesce(sum(bytes),0) b FROM cache_files")
-    return {"files": r["n"], "bytes": r["b"], "limit": CACHE_LIMIT, "diskFree": shutil.disk_usage(CACHE).free}
+    free = shutil.disk_usage(CACHE).free
+    # No fixed cap: the cache may grow into all free disk space except MIN_FREE.
+    room = r["b"] + max(0, free - MIN_FREE)
+    limit = min(CACHE_LIMIT, room) if CACHE_LIMIT else room
+    return {"files": r["n"], "bytes": r["b"], "limit": limit, "diskFree": free}
 
 
 def evict(keep: str = ""):
     """Drop least-recently-streamed files until under the cap and the disk keeps MIN_FREE free."""
     total = db.one("SELECT coalesce(sum(bytes),0) b FROM cache_files")["b"]
     for r in db.q("SELECT video_id, bytes FROM cache_files ORDER BY last_access ASC"):
-        if total <= CACHE_LIMIT and shutil.disk_usage(CACHE).free >= MIN_FREE:
+        if (not CACHE_LIMIT or total <= CACHE_LIMIT) and shutil.disk_usage(CACHE).free >= MIN_FREE:
             break
         if r["video_id"] == keep or r["video_id"] in inflight:
             continue
@@ -770,7 +774,7 @@ table{{width:100%;border-collapse:collapse}}td{{padding:7px 6px;border-top:1px s
 </style></head><body><main>
 <h1>Spotube Server</h1><div class=sub>v{VERSION} · up {up // 86400}d {up % 86400 // 3600}h {up % 3600 // 60}m · yt-dlp {_e(y["ytdlp"])} · refreshes every 20 s</div>
 <div class=grid>
- <div class=card><h2>Music cache</h2><div class=big>{_gb(c["bytes"])}</div><div class=bar><i style="width:{pct(c["bytes"], c["limit"])}%"></i></div><div class=dim>{c["files"]} songs · limit {_gb(c["limit"])}</div></div>
+ <div class=card><h2>Music cache</h2><div class=big>{_gb(c["bytes"])}</div><div class=bar><i style="width:{pct(c["bytes"], c["limit"])}%"></i></div><div class=dim>{c["files"]} songs · room for {_gb(c["limit"])} (disk minus {_gb(MIN_FREE)} reserve)</div></div>
  <div class=card><h2>Disk</h2><div class=big>{_gb(dk["free"])} free</div><div class=bar><i style="width:{pct(dk["used"], dk["total"])}%"></i></div><div class=dim>{_gb(dk["used"])} of {_gb(dk["total"])} used · DB {_gb(d["db"])}</div></div>
  <div class=card><h2>YouTube</h2><div class="big {ytc}" style="font-size:18px">{_e(yts)}</div><div class=dim style="margin-top:8px">{y["server"]} by server · {y["helper"]} by Mac helpers · {y["failed"]} failed (since restart)</div>
   {f'<div class=dim style="margin-top:6px">Last error {_ago(y["last_error_at"])}: {_e(y["last_error"][:140])}</div>' if y["last_error"] else ""}</div>

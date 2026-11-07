@@ -26,7 +26,7 @@ Build: `brew install xcodegen && xcodegen && open SpotubeLite.xcodeproj` (scheme
 FastAPI + SQLite + yt-dlp in Docker at `https://qerope.me/spotube` (deploy: `Server/deploy.sh`).
 - Syncs favourites, playlists, saved albums/artists, the Spotify login and YouTube matches between devices (last writer wins), plus device state for handoff.
 - Records every listen (device, duration, skipped, context) and searches in `/opt/spotube/data/db/spotube.db` for stats.
-- Streams audio when a device can't run yt-dlp (iPhone): 5 GB LRU cache (keeps ≥1.5 GB disk free), served by nginx with Range support.
+- Streams audio when a device can't run yt-dlp (iPhone): cache that fills the free disk (keeps 2 GB free, drops the longest-unplayed songs first), served by nginx with Range support.
 - YouTube blocks many datacenter IPs. The Mac app therefore acts as a helper: it uploads every song it plays, and fetches songs on request. Alternatives: set `YTDLP_PROXY` (e.g. Cloudflare WARP) in `docker-compose.yml`, or drop a `cookies.txt` into `/opt/spotube/data/`.
 - Connecting a device: `Config/server.json` (`{"url","token"}`, gitignored) is bundled into local builds; release builds never contain it. Pair other devices with the QR code in Settings → Server → Connect Another Device.
 
