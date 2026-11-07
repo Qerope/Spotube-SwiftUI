@@ -62,7 +62,9 @@ else git commit -q -m "${MESSAGE:-Release $TAG}"; git log --oneline -1; fi
 BUILD_DIR="build"; DERIVED="$BUILD_DIR/DerivedData"; mkdir -p "$BUILD_DIR"
 BUILD_NUMBER=$(git rev-list --count HEAD)
 # Never ship the server token in public release assets: pair devices with the QR code in Settings instead.
+# The project references the file, so an empty placeholder takes its place during the build.
 if [[ -f Config/server.json ]]; then mv Config/server.json Config/server.json.local; trap 'mv Config/server.json.local Config/server.json' EXIT; fi
+echo '{}' > Config/server.json
 xcodegen -q
 build() { # $1 = destination, $2 = log name, rest = extra settings
   local dest="$1" log="$BUILD_DIR/$2.log"; shift 2
