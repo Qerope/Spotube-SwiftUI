@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Commits all changes, pushes, builds the macOS .app (zipped) and an unsigned iOS .ipa, and
-# publishes both as a GitHub release on Qerope/Spotube-SwiftUI.
+# publishes both as a GitHub release on Qerope/Spotube-SwiftUI, then adds the .ipa to the AltStore
+# source on the server (https://qerope.me/spotube/altstore/source.json; skip with NO_ALTSTORE=1).
 #
 # With a "Developer ID Application" certificate + notary profile the Mac app is also notarized
 # (opens on any Mac); otherwise it is ad-hoc signed (install-latest.sh strips quarantine).
@@ -16,6 +17,7 @@ REPO="Qerope/Spotube-SwiftUI"
 SCHEME="SpotubeLite"
 APP_NAME="SpotubeLite"
 NOTARY_PROFILE="${NOTARY_PROFILE:-SpotubeLite-notary}"
+SERVER="${SERVER:-ubuntu@204.216.106.35}"      # hosts the AltStore source (see Server/altstore.py)
 
 cd "$(dirname "$0")"
 
@@ -48,6 +50,8 @@ TAG="v$VERSION"
 git rev-parse -q --verify "refs/tags/$TAG" >/dev/null && fail "Tag $TAG already exists"
 echo "Releasing $TAG"
 
+PREV_TAG=$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -1)
+
 # --- Commit ------------------------------------------------------------------------------
 step "Committing changes"
 git add -A
@@ -57,6 +61,8 @@ else git commit -q -m "${MESSAGE:-Release $TAG}"; git log --oneline -1; fi
 # --- Build -------------------------------------------------------------------------------
 BUILD_DIR="build"; DERIVED="$BUILD_DIR/DerivedData"; mkdir -p "$BUILD_DIR"
 BUILD_NUMBER=$(git rev-list --count HEAD)
+# Never ship the server token in public release assets: pair devices with the QR code in Settings instead.
+if [[ -f Config/server.json ]]; then mv Config/server.json Config/server.json.local; trap 'mv Config/server.json.local Config/server.json' EXIT; fi
 xcodegen -q
 build() { # $1 = destination, $2 = log name, rest = extra settings
   local dest="$1" log="$BUILD_DIR/$2.log"; shift 2
@@ -80,6 +86,10 @@ IOS_APP="$DERIVED/Build/Products/Release-iphoneos/$APP_NAME.app"
 IPA="$BUILD_DIR/$APP_NAME-$TAG.ipa"
 rm -rf "$BUILD_DIR/Payload" "$IPA"; mkdir -p "$BUILD_DIR/Payload"
 cp -R "$IOS_APP" "$BUILD_DIR/Payload/"
+# Ad-hoc sign with entitlements so AltStore/SideStore register the App Group the widget shares with the app.
+P="$BUILD_DIR/Payload/$APP_NAME.app"
+for X in "$P"/PlugIns/*.appex; do [[ -d "$X" ]] && codesign -f -s - --entitlements Widgets/Widgets.entitlements "$X"; done
+codesign -f -s - --entitlements Sources/App-iOS.entitlements "$P"
 (cd "$BUILD_DIR" && zip -qry "$(basename "$IPA")" Payload) && rm -rf "$BUILD_DIR/Payload"
 echo "Built $IPA ($(du -h "$IPA" | cut -f1))"
 
@@ -115,4 +125,20 @@ git push origin "$TAG"
 
 step "Creating GitHub release $TAG"
 gh release create "$TAG" "$ZIP" "$IPA" --repo "$REPO" --title "Spotube Lite $TAG" --generate-notes
+
+# --- AltStore -----------------------------------------------------------------------------
+if [[ -z "${NO_ALTSTORE:-}" ]]; then
+  step "Publishing to the AltStore source"
+  NOTES="$BUILD_DIR/notes.txt"
+  git log --no-merges --format='• %s' ${PREV_TAG:+"$PREV_TAG..HEAD"} | grep -v '^• Release v' | head -15 > "$NOTES" || true
+  if scp -q "$IPA" "$NOTES" "$SERVER:/tmp/" \
+     && scp -q Sources/Assets.xcassets/AppIcon.appiconset/ios1024.png "$SERVER:/opt/spotube/data/altstore/icon.png" \
+     && ssh "$SERVER" bash -c "'mv /tmp/$(basename "$IPA") /opt/spotube/data/altstore/ && chmod 644 /opt/spotube/data/altstore/* \
+          && python3 /opt/spotube/altstore.py $(basename "$IPA") $VERSION $BUILD_NUMBER /tmp/notes.txt'"; then
+    echo "AltStore source: https://qerope.me/spotube/altstore/source.json"
+  else
+    warn "Could not update the AltStore source (GitHub release is done). Retry later or check $SERVER."
+  fi
+fi
+
 printf '\n\033[32mDone:\033[0m %s\n' "$(gh release view "$TAG" --repo "$REPO" --json url --jq .url)"

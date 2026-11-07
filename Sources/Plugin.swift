@@ -28,8 +28,18 @@ import WebKit
             }.resume()
         }
         let pid = file.deletingPathExtension().lastPathComponent
-        let get: @convention(block) (String) -> Any = { UserDefaults.standard.string(forKey: "pl.\(pid).\($0)").flatMap { $0.isEmpty ? nil : $0 } ?? NSNull() }
-        let set: @convention(block) (String, String) -> Void = { UserDefaults.standard.set($1, forKey: "pl.\(pid).\($0)") }
+        let get: @convention(block) (String) -> Any = { PluginStorage.get(pid, $0) ?? NSNull() }
+        let set: @convention(block) (String, String) -> Void = { k, v in MainActor.assumeIsolated { PluginStorage.set(pid, k, v.isEmpty ? nil : v) } }
+        let srvAvail: @convention(block) () -> Bool = { MainActor.assumeIsolated { Cloud.shared.enabled } }
+        let srvAudio: @convention(block) (String, JSValue) -> Void = { id, cb in
+            Task { @MainActor in
+                do {
+                    let u = try await Cloud.shared.prepareAudio(id)
+                    let r = try JSONSerialization.data(withJSONObject: ["url": u.absoluteString, "key": "yt-" + id])
+                    cb.call(withArguments: [String(data: r, encoding: .utf8)!, NSNull()])
+                } catch { cb.call(withArguments: [NSNull(), error.localizedDescription]) }
+            }
+        }
         let hmac: @convention(block) (String, String, String) -> String = { algo, k, d in
             let key = SymmetricKey(data: Data(hex: k)), msg = Data(hex: d)
             switch algo {
@@ -53,6 +63,8 @@ import WebKit
         }
         if YtDlp.bin != nil { ctx.setObject(ytdlp, forKeyedSubscript: "__ytdlp" as NSString) }
         #endif
+        ctx.setObject(srvAvail, forKeyedSubscript: "__srvAvail" as NSString)
+        ctx.setObject(srvAudio, forKeyedSubscript: "__srvAudio" as NSString)
         ctx.setObject(hmac, forKeyedSubscript: "__hmac" as NSString)
         ctx.setObject(cookie, forKeyedSubscript: "__cookie" as NSString)
         ctx.setObject(fetch, forKeyedSubscript: "__fetch" as NSString)
@@ -64,6 +76,7 @@ import WebKit
         globalThis.localStorage={getItem:k=>__lsGet(k),setItem:(k,v)=>__lsSet(k,String(v)),removeItem:k=>__lsSet(k,"")};
         globalThis.ytdlp=typeof __ytdlp==="function"?{audio:u=>new Promise((res,rej)=>__ytdlp(String(u),(v,e)=>e?rej(new Error(e)):res(v)))}:null;
         globalThis.crypto={hmac:(a,kHex,dHex)=>__hmac(a,kHex,dHex)};
+        globalThis.server={available:()=>__srvAvail(),audio:id=>new Promise((res,rej)=>__srvAudio(String(id),(v,e)=>e?rej(new Error(e)):res(JSON.parse(v))))};
         globalThis.webview={cookie:(u,n)=>new Promise((res,rej)=>__cookie(u,n,(v,e)=>e?rej(new Error(e)):res(v)))};
         """)
         ctx.evaluateScript(src + "\n;globalThis.plugin=plugin;")
@@ -77,21 +90,33 @@ import WebKit
 
     func has(_ fn: String) -> Bool { ctx.evaluateScript("typeof plugin.\(fn)==='function'").toBool() }
 
-    func call<T: Decodable>(_ fn: String, _ args: [Any] = []) async throws -> T {
+    /// Calls `plugin[fn](...args)`; fails after `timeout` seconds instead of hanging the UI forever.
+    func call<T: Decodable>(_ fn: String, _ args: [Any] = [], timeout: Double = 200) async throws -> T {
         let a = String(data: try JSONSerialization.data(withJSONObject: args), encoding: .utf8)!
+        let once = CallOnce(), name = self.name
         let json: String = try await withCheckedThrowingContinuation { c in
             let cb: @convention(block) (JSValue, JSValue) -> Void = { r, e in
-                if !e.isNull { c.resume(throwing: NSError(domain: self.name, code: 1, userInfo: [NSLocalizedDescriptionKey: e.toString()!])) }
+                guard !once.done else { return }
+                once.done = true
+                if !e.isNull { c.resume(throwing: NSError(domain: name, code: 1, userInfo: [NSLocalizedDescriptionKey: e.toString()!])) }
                 else { c.resume(returning: r.toString()) }
             }
             ctx.objectForKeyedSubscript("__call").call(withArguments: [fn, a, unsafeBitCast(cb, to: AnyObject.self)])
+            DispatchQueue.main.asyncAfter(deadline: .now() + timeout) {
+                guard !once.done else { return }
+                once.done = true
+                c.resume(throwing: NSError(domain: name, code: 2, userInfo: [NSLocalizedDescriptionKey: "\(name): \(fn) timed out"]))
+            }
         }
         return try JSONDecoder().decode(T.self, from: Data(json.utf8))
     }
 }
 
 @MainActor @Observable final class PluginManager {
+    static let shared = PluginManager()
     var plugins: [JSPlugin] = []
+    /// Bumped when a login arrives (locally or synced from another device) so views reload.
+    var revision = 0
     var metadataID = UserDefaults.standard.string(forKey: "metaPlugin") { didSet { UserDefaults.standard.set(metadataID, forKey: "metaPlugin") } }
     var audioID = UserDefaults.standard.string(forKey: "audioPlugin") { didSet { UserDefaults.standard.set(audioID, forKey: "audioPlugin") } }
     let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appending(path: "Plugins")
@@ -104,7 +129,7 @@ import WebKit
         return c.first { $0.id != "itunes" } ?? c.first
     }
 
-    init() {
+    private init() {
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         for f in Bundle.main.urls(forResourcesWithExtension: "js", subdirectory: nil) ?? [] {
             let dst = dir.appending(path: f.lastPathComponent)
@@ -175,10 +200,10 @@ extension Data {
     static func audio(_ url: String) async throws -> URL {
         guard let bin else { throw NSError(domain: "yt-dlp", code: 1, userInfo: [NSLocalizedDescriptionKey: "yt-dlp not installed (brew install yt-dlp deno)"]) }
         let id = URLComponents(string: url)?.queryItems?.first { $0.name == "v" }?.value ?? UUID().uuidString
-        let dst = ChunkedDownload.dir.appending(path: "yt-\(id).m4a")
+        let dst = AudioCache.path("yt-\(id)")
         if FileManager.default.fileExists(atPath: dst.path) { return dst }
         if let t = inflight[id] { return try await t.value }
-        let tmp = ChunkedDownload.dir.appending(path: "yt-\(id).dl.m4a")
+        let tmp = AudioCache.dir.appending(path: "yt-\(id).dl.m4a")
         let task = Task.detached { () throws -> URL in
             let p = Process()
             p.executableURL = URL(fileURLWithPath: bin)
@@ -200,7 +225,48 @@ extension Data {
         }
         inflight[id] = task
         defer { inflight[id] = nil }
-        return try await task.value
+        let f = try await task.value
+        // Share with the server cache so the iPhone gets this song instantly.
+        Task { await Cloud.shared.share(videoId: id, file: f) }
+        return f
     }
 }
 #endif
+
+/// Plugin `localStorage`. Logins and YouTube matches sync to your other devices through the server.
+@MainActor enum PluginStorage {
+    static func get(_ pid: String, _ k: String) -> String? { UserDefaults.standard.string(forKey: "pl.\(pid).\(k)").flatMap { $0.isEmpty ? nil : $0 } }
+    static func synced(_ k: String) -> Bool { k == "sp_dc" || k.hasPrefix("m2:") || k.hasPrefix("bad:") }
+
+    static func set(_ pid: String, _ k: String, _ v: String?, sync: Bool = true) {
+        guard get(pid, k) != v else { return }
+        UserDefaults.standard.set(v ?? "", forKey: "pl.\(pid).\(k)")
+        if sync, synced(k) { Cloud.shared.record("plugin", "\(pid)/\(k)", v.map { .string($0) }) }
+    }
+
+    static func setup() {
+        Cloud.shared.handlers["plugin"] = { ch in
+            let parts = ch.key.split(separator: "/", maxSplits: 1).map(String.init)
+            guard parts.count == 2, synced(parts[1]) else { return }
+            let v = ch.deleted ? nil : ch.value?.string
+            guard get(parts[0], parts[1]) != v else { return }
+            set(parts[0], parts[1], v, sync: false)
+            if parts[1] == "sp_dc" {
+                set(parts[0], "tok", nil, sync: false)
+                PluginManager.shared.revision += 1
+                Task { v == nil ? Library.shared.clearSpotify() : await Library.shared.refreshSpotify() }
+            }
+        }
+        // First time on a server: upload what this device already has (e.g. the Mac's Spotify login, matches).
+        let flag = "cloud.bootstrapped." + Cloud.shared.url
+        guard Cloud.shared.enabled, !UserDefaults.standard.bool(forKey: flag) else { return }
+        for (key, value) in UserDefaults.standard.dictionaryRepresentation() where key.hasPrefix("pl.") {
+            let parts = key.dropFirst(3).split(separator: ".", maxSplits: 1).map(String.init)
+            guard parts.count == 2, synced(parts[1]), let v = value as? String, !v.isEmpty else { continue }
+            Cloud.shared.record("plugin", "\(parts[0])/\(parts[1])", .string(v))
+        }
+        UserDefaults.standard.set(true, forKey: flag)
+    }
+}
+
+private final class CallOnce { var done = false }

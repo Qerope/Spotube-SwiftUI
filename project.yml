@@ -1,10 +1,10 @@
 name: SpotubeLite
-options: { bundleIdPrefix: dev.qerope, deploymentTarget: { macOS: "14.0", iOS: "17.0" } }
+options: { bundleIdPrefix: dev.qerope, deploymentTarget: { macOS: "15.0", iOS: "26.0" } }
 targets:
   SpotubeLite:
     type: application
     supportedDestinations: [macOS, iOS]
-    sources: [Sources, { path: Plugins, buildPhase: resources }]
+    sources: [Sources, { path: Plugins, buildPhase: resources }, { path: Config/server.json, buildPhase: resources, optional: true }]
     info:
       path: Sources/Info.plist
       properties:
@@ -12,10 +12,45 @@ targets:
         UILaunchScreen: { UIColorName: "" }
         CFBundleDisplayName: Spotube Lite
         LSApplicationCategoryType: public.app-category.music
+        NSLocalNetworkUsageDescription: Used for AirPlay and streaming from your Spotube server.
+        CFBundleURLTypes: [{ CFBundleURLName: dev.qerope.SpotubeLite, CFBundleURLSchemes: [spotubelite] }]
+        NSSupportsLiveActivities: true
     entitlements:
       path: Sources/App.entitlements
       properties:
         com.apple.security.app-sandbox: false
         com.apple.security.network.client: true
         com.apple.security.files.user-selected.read-only: true
-    settings: { SWIFT_VERSION: "5.0", GENERATE_INFOPLIST_FILE: YES, CODE_SIGN_STYLE: Automatic, CODE_SIGN_IDENTITY: "-", ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon, MARKETING_VERSION: "1.0.0", CURRENT_PROJECT_VERSION: "1" }
+    dependencies:
+      - { target: SpotubeLiteWidgets, platformFilter: iOS }
+    settings:
+      SWIFT_VERSION: "5.0"
+      GENERATE_INFOPLIST_FILE: YES
+      CODE_SIGN_STYLE: Automatic
+      CODE_SIGN_IDENTITY: "-"
+      ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+      MARKETING_VERSION: "2.1.0"
+      CURRENT_PROJECT_VERSION: "3"
+      # iOS: App Group shared with the widget (macOS keeps App.entitlements).
+      "CODE_SIGN_ENTITLEMENTS[sdk=iphone*]": Sources/App-iOS.entitlements
+  SpotubeLiteWidgets:
+    type: app-extension
+    platform: iOS
+    deploymentTarget: "26.0"
+    sources: [Widgets, Sources/Shared]
+    info:
+      path: Widgets/Info.plist
+      properties:
+        CFBundleDisplayName: Spotube Lite
+        NSExtension: { NSExtensionPointIdentifier: com.apple.widgetkit-extension }
+    entitlements:
+      path: Widgets/Widgets.entitlements
+      properties:
+        com.apple.security.application-groups: [group.dev.qerope.SpotubeLite]
+    settings:
+      SWIFT_VERSION: "5.0"
+      GENERATE_INFOPLIST_FILE: YES
+      CODE_SIGN_STYLE: Automatic
+      PRODUCT_BUNDLE_IDENTIFIER: dev.qerope.SpotubeLite.Widgets
+      MARKETING_VERSION: "2.1.0"
+      CURRENT_PROJECT_VERSION: "3"

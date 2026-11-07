@@ -1,0 +1,15 @@
+services:
+  spotube:
+    build: .
+    container_name: spotube
+    restart: unless-stopped
+    env_file: .env            # SPOTUBE_TOKEN=..., created by deploy.sh, never committed
+    environment:
+      DATA_DIR: /data
+      CACHE_LIMIT_GB: "10"
+      MIN_FREE_GB: "1.5"
+      ACCEL_PREFIX: /spotube-cache/
+    volumes:
+      - ./data:/data
+    ports:
+      - "127.0.0.1:8770:8770"

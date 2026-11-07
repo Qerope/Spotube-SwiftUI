@@ -61,23 +61,43 @@ async function gql(op, variables) {
   return j;
 }
 // Collect every object whose uri starts with `pre` (robust to GraphQL wrapper shapes).
-function walk(x, pre, out = [], seen = new Set()) {
-  if (Array.isArray(x)) x.forEach(y => walk(y, pre, out, seen));
+const nameOf = x => x.name || x.profile?.name;
+// Handles `{ _uri, data }` wrappers (Liked Songs) and remembers the nearest `addedAt` (for "date added" sorting).
+function walk(x, pre, out = [], seen = new Set(), added) {
+  if (Array.isArray(x)) x.forEach(y => walk(y, pre, out, seen, added));
   else if (x && typeof x === "object") {
-    if (typeof x.uri === "string" && x.uri.startsWith(pre) && x.name) { if (!seen.has(x.uri)) { seen.add(x.uri); out.push(x); } return out; }
-    for (const k in x) walk(x[k], pre, out, seen);
+    if (x.addedAt?.isoString) added = x.addedAt.isoString;
+    if (typeof x._uri === "string" && x.data && typeof x.data === "object" && !x.data.uri) x = { ...x, data: { ...x.data, uri: x._uri } };
+    if (typeof x.uri === "string" && x.uri.startsWith(pre) && nameOf(x)) {
+      if (!seen.has(x.uri)) { seen.add(x.uri); out.push(added ? { ...x, __added: added } : x); }
+      return out;
+    }
+    for (const k in x) walk(x[k], pre, out, seen, added);
   }
   return out;
 }
-const art = o => { const s = (o && (o.coverArt?.sources || o.images?.items?.[0]?.sources)) || []; return [...s].sort((a, b) => (b.width || 0) - (a.width || 0))[0]?.url; };
+const best = s => [...(s || [])].sort((a, b) => (b.width || b.maxWidth || 0) - (a.width || a.maxWidth || 0))[0]?.url;
+const art = o => best(o && (o.coverArt?.sources || o.images?.items?.[0]?.sources || o.visuals?.avatarImage?.sources || o.avatarImage?.sources));
+const color = o => o?.coverArt?.extractedColors?.colorDark?.hex || o?.images?.items?.[0]?.extractedColors?.colorDark?.hex
+  || o?.visuals?.avatarImage?.extractedColors?.colorDark?.hex;
+const cap = x => x ? x[0] + x.slice(1).toLowerCase() : null;
+const names = a => (a?.items || []).map(x => x.profile?.name).filter(Boolean).join(", ");
 const track = (d, album) => ({
   id: d.uri.split(":")[2], title: d.name,
-  artist: (d.artists?.items || []).map(a => a.profile?.name).filter(Boolean).join(", "),
+  artist: names(d.artists),
   album: d.albumOfTrack?.name || album?.name, art: art(d.albumOfTrack) || art(album),
   duration: ((d.duration || d.trackDuration)?.totalMilliseconds || 0) / 1000,
   extra: Object.fromEntries(Object.entries({ uri: d.uri, albumUri: d.albumOfTrack?.uri || album?.uri,
-    artistUri: d.artists?.items?.[0]?.uri }).filter(([, v]) => v)),
+    artistUri: d.artists?.items?.[0]?.uri, artistUris: (d.artists?.items || []).map(a => a.uri).filter(Boolean).join(","),
+    explicit: d.contentRating?.label === "EXPLICIT" ? "1" : undefined,
+    trackNumber: d.trackNumber ? String(d.trackNumber) : undefined, disc: d.discNumber ? String(d.discNumber) : undefined,
+    plays: d.playcount ? String(d.playcount) : undefined, addedAt: d.__added }).filter(([, v]) => v)),
 });
+const albumC = x => ({ id: x.uri, title: x.name, kind: (x.type || "album").toLowerCase(), art: art(x), color: color(x),
+  subtitle: [cap(x.type) || "Album", names(x.artists), x.date?.year].filter(Boolean).join(" · ") });
+const artistC = x => ({ id: x.uri, title: nameOf(x), subtitle: "Artist", kind: "artist", art: art(x) });
+const playlistC = p => ({ id: p.uri, title: p.name, kind: "playlist", subtitle: p.ownerV2?.data?.name ? "Playlist · " + p.ownerV2.data.name : "Playlist",
+  art: art(p), color: color(p) });
 async function paged(op, vars, limit, album, max = 1000) {
   const out = [];
   for (let offset = 0; offset < max; offset += limit) {
@@ -87,38 +107,51 @@ async function paged(op, vars, limit, album, max = 1000) {
   }
   return out;
 }
+async function libraryOf(filter, pre, map) {
+  const out = [];
+  for (let offset = 0; offset < 1000; offset += 50) {
+    const r = await gql("libraryV3", { filters: [filter], order: null, textFilter: "", features: [], limit: 50, offset, flatten: true,
+      expandedFolders: [], folderUri: null, includeFoldersWhenFlattening: true });
+    const page = walk(r.data?.me?.libraryV3?.items || r, pre);
+    out.push(...page.map(map));
+    if (page.length < 50) break;
+  }
+  return out;
+}
+const searchVars = (q, limit) => ({ searchTerm: q, offset: 0, limit, numberOfTopResults: 10, includeAudiobooks: false, includePreReleases: false,
+  includeLocalConcertsField: false, includeArtistHasConcertsField: false, includeAuthors: false });
 
 const plugin = {
-  name: "Spotify", version: "1.0.0", author: "spotube-lite (port of Sonic Liberation)", abilities: ["metadata", "authentication"],
+  name: "Spotify", version: "2.1.0", author: "spotube-lite (port of Sonic Liberation)", abilities: ["metadata", "authentication"],
   async login() {
     const v = await webview.cookie("https://accounts.spotify.com/en/login?continue=https%3A%2F%2Fopen.spotify.com%2F", "sp_dc");
     localStorage.setItem("sp_dc", v); localStorage.removeItem("tok");
     await token(); return "ok";
   },
   async logout() { localStorage.removeItem("sp_dc"); localStorage.removeItem("tok"); return "ok"; },
+  async loggedIn() { return !!localStorage.getItem("sp_dc"); },
   async search(q) {
-    const r = await gql("searchTracks", { searchTerm: q, offset: 0, limit: 50, numberOfTopResults: 20, includeAudiobooks: false, includePreReleases: false, includeAuthors: false });
+    const r = await gql("searchTracks", { ...searchVars(q, 50), numberOfTopResults: 20 });
     return walk(r, "spotify:track:").map(d => track(d));
   },
-  // Home: Liked Songs; if Spotify rejects that query, fall back to your first playlist.
-  // Artists first, then songs.
+  // Everything at once: top result, songs, artists, albums, playlists.
   async searchAll(q) {
-    const vars = { searchTerm: q, offset: 0, limit: 10, numberOfTopResults: 10, includeAudiobooks: false, includePreReleases: false, includeAuthors: false };
-    const [ar, tracks] = await Promise.all([gql("searchArtists", vars).catch(e => ({ error: String(e.message || e) })), this.search(q)]);
-    const artists = [], seen = new Set();
-    (function find(x) {
-      if (Array.isArray(x)) return x.forEach(find);
-      if (!x || typeof x !== "object") return;
-      if (typeof x.uri === "string" && x.uri.startsWith("spotify:artist:") && x.profile?.name) {
-        if (!seen.has(x.uri)) { seen.add(x.uri); artists.push({ id: x.uri, title: x.profile.name, subtitle: "Artist",
-          art: [...(x.visuals?.avatarImage?.sources || [])].sort((a, b) => (b.width || 0) - (a.width || 0))[0]?.url }); }
-        return;
-      }
-      for (const k in x) find(x[k]);
-    })(ar.data);
-    return { artists, tracks, error: ar.error };
+    try {
+      const d = (await gql("searchDesktop", searchVars(q, 20))).data?.searchV2 || {};
+      const top = walk(d.topResultsV2, "spotify:")[0];
+      return {
+        top: top ? { id: top.uri, type: top.uri.split(":")[1] } : null,
+        tracks: walk(d.tracksV2, "spotify:track:").map(x => track(x)),
+        artists: walk(d.artists, "spotify:artist:").map(artistC),
+        albums: walk(d.albumsV2, "spotify:album:").map(albumC),
+        playlists: walk(d.playlists, "spotify:playlist:").map(playlistC),
+      };
+    } catch (e) {
+      const [ar, tracks] = await Promise.all([gql("searchArtists", searchVars(q, 10)).catch(e => ({ error: String(e.message || e) })), this.search(q)]);
+      return { artists: walk(ar.data || {}, "spotify:artist:").map(artistC), tracks, albums: [], playlists: [], error: ar.error };
+    }
   },
-  // Artist page: top tracks + full discography (albums, singles, compilations), newest first.
+  // Artist page: top tracks, discography by type, related artists, bio and stats.
   async artist(id) {
     const [o, albums] = await Promise.all([
       gql("queryArtistOverview", { uri: id, locale: "", preReleaseV2: false }),
@@ -133,31 +166,61 @@ const plugin = {
       })().catch(() => []),
     ]);
     const a = o.data?.artistUnion || {}, disc = a.discography || {};
-    const cap = x => x ? x[0] + x.slice(1).toLowerCase() : null;
     const rel = albums.length ? albums : walk([disc.popularReleasesAlbums, disc.albums, disc.singles, disc.compilations], "spotify:album:");
     return {
       name: a.profile?.name || "",
-      art: (a.visuals?.avatarImage?.sources || []).sort((x, y) => (y.width || 0) - (x.width || 0))[0]?.url,
+      art: best(a.visuals?.avatarImage?.sources),
+      header: best(a.headerImage?.data?.sources || a.visuals?.headerImage?.sources),
+      color: color(a),
+      bio: (a.profile?.biography?.text || "").replace(/<[^>]+>/g, ""),
+      monthlyListeners: a.stats?.monthlyListeners || 0, followers: a.stats?.followers || 0,
+      topCities: (a.stats?.topCities?.items || []).map(c => `${c.city}, ${c.country}`),
       tracks: walk(disc.topTracks || {}, "spotify:track:").map(d => track(d)),
-      albums: rel.map(x => ({ id: x.uri, title: x.name, subtitle: [cap(x.type), x.date?.year].filter(Boolean).join(" · "), art: art(x) })),
+      albums: rel.map(albumC),
+      related: walk(a.relatedContent?.relatedArtists || {}, "spotify:artist:").map(artistC),
+      appearsOn: walk(a.relatedContent?.appearsOn || {}, "spotify:album:").map(albumC),
     };
   },
-  async home() {
-    const errs = [];
-    try { const t = await paged("fetchLibraryTracks", {}, 50, null, 100); if (t.length) return t; } catch (e) { errs.push(String(e.message || e)); }
-    for (const p of (await this.library()).slice(1, 4)) {
-      try { const t = await this.collection(p.id); if (t.length) return t; } catch (e) { errs.push(String(e.message || e)); }
+  // Discovery: the newest releases of these artists ([{id, name}], one light request each), newest first.
+  async releases(artists, days = 120) {
+    const since = Date.now() - days * 864e5, out = [], seen = new Set();
+    for (let i = 0; i < artists.length; i += 6) {
+      const batch = artists.slice(i, i + 6);
+      const pages = await Promise.all(batch.map(a =>
+        gql("queryArtistDiscographyAll", { uri: a.id, offset: 0, limit: 6, order: "DATE_DESC" })
+          .then(r => walk(r.data, "spotify:album:").map(x => [a, x])).catch(() => [])));
+      for (const [a, x] of pages.flat()) {
+        const t = Date.parse(x.date?.isoString || "");
+        // Same release in several editions/markets: keep one per artist + title.
+        const key = a.id + "|" + (x.name || "").toLowerCase();
+        if (!(t >= since) || t > Date.now() + 864e5 || seen.has(x.uri) || seen.has(key) || x.date?.precision !== "DAY") continue;
+        seen.add(x.uri); seen.add(key);
+        out.push({ ...albumC(x), subtitle: [a.name, cap(x.type) || "Album"].filter(Boolean).join(" · "), released: x.date.isoString });
+      }
     }
-    throw new Error(errs.join(" | ") || "Your library is empty");
+    return out.sort((a, b) => b.released.localeCompare(a.released));
+  },
+  // Autoplay: this artist's top songs mixed with songs from related artists.
+  async radio(t) {
+    const id = t.extra?.artistUri;
+    if (!id) return [];
+    const me = await this.artist(id);
+    const others = [...me.related].sort(() => Math.random() - 0.5).slice(0, 4);
+    const more = await Promise.all(others.map(r => this.artist(r.id).then(p => p.tracks.slice(0, 5)).catch(() => [])));
+    const mix = [...me.tracks.slice(0, 6), ...more.flat()];
+    return mix.filter(x => x.id !== t.id).sort(() => Math.random() - 0.5);
   },
   async library() {
     const r = await gql("libraryV3", { filters: ["Playlists"], order: null, textFilter: "", features: [], limit: 50, offset: 0, flatten: true, expandedFolders: [], folderUri: null, includeFoldersWhenFlattening: true });
-    return [{ id: "liked", title: "Liked Songs" },
-      ...walk(r, "spotify:playlist:").map(p => ({ id: p.uri, title: p.name, subtitle: p.ownerV2?.data?.name, art: art(p) }))];
+    return [{ id: "liked", title: "Liked Songs", subtitle: "Spotify", kind: "playlist" },
+      ...walk(r, "spotify:playlist:").map(playlistC)];
   },
-  async collection(id) {
-    if (id === "liked") return paged("fetchLibraryTracks", {}, 50);
-    if (id.startsWith("spotify:artist:")) return (await this.artist(id)).tracks;
+  async libraryAlbums() { return libraryOf("Albums", "spotify:album:", albumC); },
+  async libraryArtists() { return libraryOf("Artists", "spotify:artist:", artistC); },
+  // Header info + tracks for an album / playlist / Liked Songs.
+  async details(id) {
+    if (id === "liked") return { id, title: "Liked Songs", subtitle: "Spotify", kind: "playlist", tracks: await paged("fetchLibraryTracks", {}, 50) };
+    if (id.startsWith("spotify:artist:")) { const a = await this.artist(id); return { id, title: a.name, kind: "artist", art: a.art, tracks: a.tracks }; }
     if (id.startsWith("spotify:album:")) {
       const out = []; let album = null;
       for (let offset = 0; offset < 500; offset += 50) {
@@ -167,8 +230,24 @@ const plugin = {
         out.push(...page.map(d => track(d, album)));
         if (page.length < 50) break;
       }
-      return out;
+      const a = album || {};
+      return { id, title: a.name, kind: (a.type || "album").toLowerCase(), art: art(a), color: color(a),
+        subtitle: names(a.artists), artistId: a.artists?.items?.[0]?.uri, year: a.date?.isoString?.slice(0, 4),
+        label: a.label, copyright: (a.copyright?.items || []).map(c => c.text).join(" · "), tracks: out,
+        more: walk(a.moreAlbumsByArtist || {}, "spotify:album:").filter(x => x.uri !== id).map(albumC) };
     }
-    return paged("fetchPlaylist", { uri: id, enableWatchFeedEntrypoint: false }, 100);
+    const out = []; let meta = null;
+    for (let offset = 0; offset < 2000; offset += 100) {
+      const r = await gql("fetchPlaylist", { uri: id, offset, limit: 100, enableWatchFeedEntrypoint: false });
+      meta = meta || r.data?.playlistV2;
+      const page = walk(r.data?.playlistV2?.content || r, "spotify:track:");
+      out.push(...page.map(d => track(d)));
+      if (page.length < 100) break;
+    }
+    const p = meta || {};
+    return { id, title: p.name, kind: "playlist", art: art(p), color: color(p), subtitle: p.ownerV2?.data?.name,
+      description: (p.description || "").replace(/<[^>]+>/g, ""), followers: p.followers, tracks: out };
   },
+  async collection(id) { return (await this.details(id)).tracks; },
+  async home() { return (await this.details("liked")).tracks.slice(0, 100); },
 };
